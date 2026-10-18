@@ -14,7 +14,7 @@ jobs:
       - name: 1. Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 2. Set up JDK 17 (Required for Android Gradle Plugin & ML Kit)
+      - name: 2. Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -26,62 +26,41 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: 4. Auto-Scaffold & Configure Android SDK 36 + ML Kit ProGuard
+      - name: 4. Auto-Scaffold & Configure Android SDK 36
         shell: bash
         run: |
-          mkdir -p /tmp/snapvault_backup
-          cp pubspec.yaml /tmp/snapvault_backup/pubspec.yaml
+          mkdir -p /tmp/sv_bak
+          cp pubspec.yaml /tmp/sv_bak/pubspec.yaml
+          cp lib/main.dart /tmp/sv_bak/main.dart
+          cp android/app/src/main/AndroidManifest.xml /tmp/sv_bak/AM.xml
 
-          if [ -f "lib/main.dart" ]; then
-            cp lib/main.dart /tmp/snapvault_backup/main.dart
-          elif [ -f "main.dart" ]; then
-            cp main.dart /tmp/snapvault_backup/main.dart
-          fi
-
-          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
-            cp android/app/src/main/AndroidManifest.xml /tmp/snapvault_backup/AndroidManifest.xml
-          elif [ -f "AndroidManifest.xml" ]; then
-            cp AndroidManifest.xml /tmp/snapvault_backup/AndroidManifest.xml
-          fi
-
-          rm -f main.dart AndroidManifest.xml
-
-          # Generate standard Android wrapper & platform files
           flutter create --org com.snapvault.app --project-name snapvault --platforms=android .
 
-          # Restore custom SnapVault source & manifest
-          cp /tmp/snapvault_backup/pubspec.yaml pubspec.yaml
-          cp /tmp/snapvault_backup/main.dart lib/main.dart
-          cp /tmp/snapvault_backup/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          cp /tmp/sv_bak/pubspec.yaml pubspec.yaml
+          cp /tmp/sv_bak/main.dart lib/main.dart
+          cp /tmp/sv_bak/AM.xml android/app/src/main/AndroidManifest.xml
 
-          # Clean unused WorkManager provider block from AndroidManifest.xml if present
           perl -0777 -pi -e 's/\s*<!-- Force-remove.*?<\/provider>//s' android/app/src/main/AndroidManifest.xml
 
-          # Add ProGuard rules for Google ML Kit optional scripts
-          cat << 'EOF' > android/app/proguard-rules.pro
-          -dontwarn com.google.mlkit.vision.text.**
-          -keep class com.google.mlkit.** { *; }
-          EOF
-
-          # Configure compileSdk = 36 (required by photo_manager 3.12+) & minSdk = 23
           if [ -f "android/app/build.gradle" ]; then
             sed -i 's/minSdkVersion .*/minSdkVersion 23/g' android/app/build.gradle
             sed -i 's/minSdk = .*/minSdk = 23/g' android/app/build.gradle
             sed -i 's/compileSdkVersion .*/compileSdkVersion 36/g' android/app/build.gradle
             sed -i 's/compileSdk = .*/compileSdk = 36/g' android/app/build.gradle
+            sed -i 's/signingConfig signingConfigs.debug/signingConfig signingConfigs.debug; minifyEnabled false; shrinkResources false/g' android/app/build.gradle
           fi
+
           if [ -f "android/app/build.gradle.kts" ]; then
             sed -i 's/minSdk = .*/minSdk = 23/g' android/app/build.gradle.kts
             sed -i 's/compileSdk = .*/compileSdk = 36/g' android/app/build.gradle.kts
-            sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("debug")\n            isMinifyEnabled = false\n            isShrinkResources = false/g' android/app/build.gradle.kts
-            sed -i 's/android {/android {\n    lint {\n        checkReleaseBuilds = false\n        abortOnError = false\n    }/g' android/app/build.gradle.kts
+            sed -i 's/signingConfig = signingConfigs.getByName("debug")/signingConfig = signingConfigs.getByName("debug"); isMinifyEnabled = false; isShrinkResources = false/g' android/app/build.gradle.kts
           fi
 
       - name: 5. Install Flutter Dependencies
         run: flutter pub get
 
       - name: 6. Build Split-per-ABI Release APKs
-        run: flutter build apk --release --split-per-abi
+        run: flutter build apk --release --split-per-abi --no-tree-shake-icons
 
       - name: 7. Upload Ready-to-Install ARM64 APK Artifact
         uses: actions/upload-artifact@v4
