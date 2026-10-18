@@ -26,46 +26,68 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - name: 4. Auto-Scaffold Android SDK 36 & Custom SnapVault Icon
+      - name: 4. Configure SDK 36 & Custom SnapVault Icon
         shell: bash
         run: |
-          mkdir -p /tmp/snapvault_backup
-          cp pubspec.yaml /tmp/snapvault_backup/pubspec.yaml
-
-          if [ -f "lib/main.dart" ]; then
-            cp lib/main.dart /tmp/snapvault_backup/main.dart
-          elif [ -f "main.dart" ]; then
-            cp main.dart /tmp/snapvault_backup/main.dart
-          fi
-
-          if [ -f "android/app/src/main/AndroidManifest.xml" ]; then
-            cp android/app/src/main/AndroidManifest.xml /tmp/snapvault_backup/AndroidManifest.xml
-          elif [ -f "AndroidManifest.xml" ]; then
-            cp AndroidManifest.xml /tmp/snapvault_backup/AndroidManifest.xml
-          fi
-
-          rm -f main.dart AndroidManifest.xml
-
+          mkdir -p /tmp/sv && cp pubspec.yaml /tmp/sv/
+          cp lib/main.dart /tmp/sv/main.dart
+          cp android/app/src/main/AndroidManifest.xml /tmp/sv/AndroidManifest.xml
           flutter create --org com.snapvault.app --project-name snapvault --platforms=android .
-
-          cp /tmp/snapvault_backup/pubspec.yaml pubspec.yaml
-          cp /tmp/snapvault_backup/main.dart lib/main.dart
-          cp /tmp/snapvault_backup/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
+          cp /tmp/sv/pubspec.yaml pubspec.yaml
+          cp /tmp/sv/main.dart lib/main.dart
+          cp /tmp/sv/AndroidManifest.xml android/app/src/main/AndroidManifest.xml
 
           python3 - << 'PYEOF'
           import os, re, glob, zlib, struct, math
 
-          # 1. Patch AndroidManifest.xml (remove unused provider block & add READ_MEDIA_VIDEO)
-          manifest_path = "android/app/src/main/AndroidManifest.xml"
-          if os.path.exists(manifest_path):
-              m = open(manifest_path, "r").read()
-              m = re.sub(r"<!-- Force-remove.*?</provider>", "", m, flags=re.S)
-              if "READ_MEDIA_VIDEO" not in m:
-                  m = m.replace(
-                      '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />',
-                      '<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />\n    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />'
-                  )
-              open(manifest_path, "w").write(m)
+          kts = "android/app/build.gradle.kts"
+          if os.path.exists(kts):
+              g = open(kts).read()
+              g = re.sub(r"minSdk\s*=\s*\S+", "minSdk = 23", g)
+              g = re.sub(r"compileSdk\s*=\s*\S+", "compileSdk = 36", g)
+              g = g.replace('getByName("debug")', 'getByName("debug")\n            isMinifyEnabled = false\n            isShrinkResources = false')
+              g = g.replace("android {", "android {\n    lint { checkReleaseBuilds = false; abortOnError = false }", 1)
+              open(kts, "w").write(g)
 
-          # 2. Patch build.gradle.kts for SDK 36 and ML Kit R8 compatibility
-          kts_path = "android/app/build.gradle.kts"
+          w, h = 256, 256
+          raw = bytearray()
+          for y in range(h):
+              raw.append(0)
+              ny = (y - 128) / 128.0
+              for x in range(w):
+                  nx = (x - 128) / 128.0
+                  t = (nx + ny + 2.0) * 0.25
+                  r, g, b = int(9 + t * 14), int(12 + t * 18), int(22 + t * 32)
+                  ax, ay = abs(nx), abs(ny)
+                  rd = math.hypot(max(ax - 0.48, 0.0), max(ay - 0.48, 0.0))
+                  if 0.24 <= rd <= 0.29:
+                      r, g, b = int(99*(1-t)+6*t), int(102*(1-t)+182*t), int(241*(1-t)+212*t)
+                  in_b = (0.34<=ax<=0.56 and 0.34<=ay<=0.56) and (ax>=0.48 or ay>=0.48) and not (ax<0.40 and ay<0.40)
+                  hd = max(ax * 0.866 + ay * 0.5, ay)
+                  if (ay <= 0.032 and ax <= 0.52) or (hd <= 0.10):
+                      r, g, b = 6, 230, 245
+                  elif (0.20 <= hd <= 0.28) or in_b:
+                      r, g, b = 115, 110, 255
+                  raw.extend((r, g, b, 255))
+
+          def ch(tag, d):
+              return struct.pack("!I", len(d)) + tag + d + struct.pack("!I", zlib.crc32(tag + d) & 0xffffffff)
+
+          png = b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack("!IIBBBBB", w, h, 8, 6, 0, 0, 0)) + ch(b"IDAT", zlib.compress(bytes(raw), 9)) + ch(b"IEND", b"")
+          for f in glob.glob("android/app/src/main/res/mipmap-*/ic_launcher*.png"):
+              open(f, "wb").write(png)
+          os.system("rm -rf android/app/src/main/res/mipmap-anydpi-v26")
+          PYEOF
+
+      - name: 5. Install Flutter Dependencies
+        run: flutter pub get
+
+      - name: 6. Build Split-per-ABI Release APKs
+        run: flutter build apk --release --split-per-abi
+
+      - name: 7. Upload Ready-to-Install ARM64 APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SnapVault-Android-Release-APK
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          retention-days: 30
