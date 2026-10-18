@@ -1,11 +1,12 @@
 // ============================================================================
-// SnapVault — Zero-Background Bilingual (TR/EN) Screenshot Organizer & Vault
+// SnapVault — Zero-Background Bilingual (TR/EN) Gallery & Screenshot Vault
 // Architecture:
 //   1. Strict On-Demand Execution (Zero background services, zero battery drain)
-//   2. Isolate-Offloaded Perceptual Hashing (64-bit dHash) via compute() with
-//      primitive Map payload (100% free of closure/State capture exceptions)
-//   3. Full-Resolution Coordinate OCR Filtering & Bilingual (TR/EN) Classifier
-//   4. Smart Burst-Shot Clustering (same category + <= 4s & pHash dist <= 6)
+//   2. Android 13/14/15/16 Image-Only Permission Fix (RequestType.image +
+//      setIgnorePermissionCheck) so gallery access NEVER fails without video perm
+//   3. Full Gallery Support (Camera photos, Movie Posters, QR/Codes, Books,
+//      Shopping Tags, and Screenshots) + Interactive Album Selector
+//   4. Isolate-Offloaded Perceptual Hashing (64-bit dHash) via compute()
 //   5. Keyless Public API Enrichment (Jikan / TVMaze / iTunes / OpenLibrary)
 //   6. Native OS Gallery Purge (PhotoManager.editor.deleteWithIds)
 // ============================================================================
@@ -44,20 +45,22 @@ class L10n {
 
   String get appTitle => 'SnapVault';
   String get subtitle => isTr
-      ? 'Sıfır Arka Plan • Akıllı Ekran Görüntüsü Kasası'
-      : 'Zero-Background • Smart Screenshot Vault';
+      ? 'Tüm Galeri & Ekran Görüntüsü Akıllı Kasası'
+      : 'Full Gallery & Screenshot Smart Vault';
   String get searchHint => isTr
-      ? 'Film, anime, kitap, ürün veya IBAN ara...'
-      : 'Search movie, anime, book, product or IBAN...';
-  String get scanNow => isTr ? 'Sonraki 25 Görüntüyü Tara' : 'Scan Next 25 Screenshots';
+      ? 'Film, anime, kitap, ürün, afiş veya IBAN ara...'
+      : 'Search movie, anime, book, poster, product or IBAN...';
+  String get scanNow =>
+      isTr ? 'Sonraki 25 Fotoğrafı Tara' : 'Scan Next 25 Photos';
   String get rescanAll => isTr ? 'Baştan Tara' : 'Rescan All';
   String get scanning => isTr ? 'Taranıyor...' : 'Scanning...';
+  String get allGalleryAlbum => isTr ? 'Tüm Galeri' : 'All Gallery';
   String get catAll => isTr ? 'Tümü' : 'All';
   String get catMovie => isTr ? 'Film / Dizi' : 'Movie / Series';
   String get catAnime => isTr ? 'Anime' : 'Anime';
   String get catBook => isTr ? 'Kitap' : 'Book';
   String get catShopping => isTr ? 'Alışveriş' : 'Shopping';
-  String get catTemp => isTr ? 'IBAN / Not' : 'IBAN / Note';
+  String get catTemp => isTr ? 'IBAN / Kod / Not' : 'IBAN / Code / Note';
 
   String get copyPayload => isTr ? 'Kopyala' : 'Copy';
   String get copiedToast =>
@@ -69,21 +72,21 @@ class L10n {
       isTr ? 'Galeriden Temizlendi' : 'Purged from Gallery';
   String get burstBadge => isTr ? 'Seri' : 'Burst';
   String get emptyStateTitle => isTr
-      ? 'Henüz İşlenmiş Ekran Görüntüsü Yok'
-      : 'No Processed Screenshots Yet';
+      ? 'Galeriniz Taranmaya Hazır'
+      : 'Your Gallery is Ready to Scan';
   String get emptyStateSub => isTr
-      ? 'SnapVault arka planda çalışmaz ve pil tüketmez.\nEkran görüntülerinizi taramak için aşağıdaki "Sonraki 25 Görüntüyü Tara" butonuna dokunun.'
-      : 'SnapVault never runs in the background or drains battery.\nTap "Scan Next 25 Screenshots" below to organize your screenshots.';
+      ? 'SnapVault sadece ekran görüntülerini değil; kamerayla çektiğiniz film afişlerini, kitap kapaklarını, fiyat etiketlerini, QR/IBAN ve notları da tanır.\n\nBaşlamak için aşağıdaki "Sonraki 25 Fotoğrafı Tara" butonuna dokunun.'
+      : 'SnapVault recognizes camera photos (movie posters, book covers, price tags, QR/IBANs) as well as screenshots.\n\nTap "Scan Next 25 Photos" below to start.';
   String get permDenied => isTr
-      ? 'Galeri izni gerekli. Lütfen ayarlardan fotoğraf erişimine izin verin.'
-      : 'Gallery permission required. Please grant photo access in Settings.';
-  String get openSettings => isTr ? 'Ayarları Aç' : 'Open Settings';
+      ? 'Galeri erişim izni gerekli. Lütfen aşağıdaki butondan uygulama ayarlarını açıp Fotoğraflar ve Videolar iznini verin.'
+      : 'Gallery permission required. Please tap below to grant Photos permission in Settings.';
+  String get openSettings => isTr ? 'İzin Ayarlarını Aç' : 'Open Permission Settings';
   String scanCompleteMsg(int added, int grouped) => isTr
       ? '$added yeni kart eklendi ($grouped seri çekim birleştirildi).'
       : '$added new cards added ($grouped burst shots merged).';
   String purgeSuccessMsg(int count) => isTr
-      ? '$count orijinal ekran görüntüsü telefon galerisinden silindi!'
-      : '$count raw screenshots deleted from device gallery!';
+      ? '$count orijinal fotoğraf telefon galerisinden silindi!'
+      : '$count original photos deleted from device gallery!';
 
   String categoryLabel(VaultCategory cat) {
     switch (cat) {
@@ -354,8 +357,6 @@ class SnapVaultDb {
 
 // ============================================================================
 // 4. ISOLATE-SAFE PERCEPTUAL HASHING & BILINGUAL CLASSIFICATION ENGINE
-//    Uses primitive Map<String, dynamic> with compute() so Dart NEVER captures
-//    State/BuildContext across Isolate boundaries!
 // ============================================================================
 
 Future<Map<String, dynamic>> processScreenshotInIsolate(
@@ -367,7 +368,6 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
   final int origH = (payload['origHeight'] as int?) ?? 2400;
   final List<dynamic> rawOcrList = payload['ocrLines'] as List<dynamic>;
 
-  // 1. Decode thumbnail & compute 64-bit Difference Perceptual Hash (dHash)
   String pHashHex = '0000000000000000';
   try {
     final decoded = img.decodeImage(thumbBytes);
@@ -407,9 +407,9 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     await File(targetThumbFilePath).writeAsBytes(thumbBytes, flush: false);
   }
 
-  // 2. Coordinate-Based Bounding-Box Filtering using true full-resolution dimensions
   final imgW = origW > 0 ? origW : 1080;
   final imgH = origH > 0 ? origH : 2400;
+  final bool isPortraitScreen = imgH > imgW * 1.5;
 
   final List<Map<String, dynamic>> validLines = [];
   for (final item in rawOcrList) {
@@ -420,15 +420,15 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     final double right = (map['right'] as num?)?.toDouble() ?? 0.0;
     final double bottom = (map['bottom'] as num?)?.toDouble() ?? 0.0;
 
-    final centerY = (top + bottom) / 2.0;
-    final centerX = (left + right) / 2.0;
-    final normY = centerY / imgH;
-    final normX = centerX / imgW;
+    if (isPortraitScreen) {
+      final centerY = (top + bottom) / 2.0;
+      final centerX = (left + right) / 2.0;
+      final normY = centerY / imgH;
+      final normX = centerX / imgW;
 
-    // Ignore top 7% (clock/battery status bar) and bottom 6% (gesture nav bar)
-    if (normY < 0.07 || normY > 0.94) continue;
-    // Ignore far-right TikTok/Reels vertical icon column
-    if (normX > 0.86 && normY > 0.45) continue;
+      if (normY < 0.05 || normY > 0.95) continue;
+      if (normX > 0.88 && normY > 0.45) continue;
+    }
 
     final cleaned = _stripBilingualSocialClutter(text);
     if (cleaned.length >= 2) {
@@ -439,11 +439,11 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     }
   }
 
-  // Fallback if coordinate filter was too strict for a cropped screenshot
   if (validLines.isEmpty && rawOcrList.isNotEmpty) {
     for (final item in rawOcrList) {
       final map = item as Map<String, dynamic>;
-      final cleaned = _stripBilingualSocialClutter((map['text'] as String?) ?? '');
+      final cleaned =
+          _stripBilingualSocialClutter((map['text'] as String?) ?? '');
       if (cleaned.length >= 2) {
         validLines.add({
           'text': cleaned,
@@ -459,8 +459,7 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
       validLines.map((l) => l['text'] as String).join('\n');
   final lowerText = fullCleanText.toLowerCase();
 
-  // 3. Deterministic Bilingual (TR/EN) Regex & Keyword Classification
-  // 3A. Check Temporary / IBAN / Verification Code
+  // 1. Check IBAN / Temporary Code / Parking / Wi-Fi / URL / QR Text
   final ibanRegex = RegExp(
     r'\bTR\s*\d{2}\s*(?:\d{4}\s*){5}\d{2}\b',
     caseSensitive: false,
@@ -479,29 +478,38 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     };
   }
 
-  final otpKeywords = RegExp(
-    r'\b(doğrulama kodu|onay kodu|şifre|kargo takip|iade kodu|verification code|security code|otp|passcode|tracking number|iban)\b',
+  final urlRegex = RegExp(
+    r'(https?:\/\/[^\s]+)|(www\.[^\s]+)',
     caseSensitive: false,
   );
-  if (otpKeywords.hasMatch(lowerText)) {
+  final urlMatch = urlRegex.firstMatch(fullCleanText);
+
+  final otpKeywords = RegExp(
+    r'\b(doğrulama kodu|onay kodu|şifre|kargo takip|iade kodu|verification code|security code|otp|passcode|tracking number|iban|wifi|wi-fi|otopark|kolon|kat\s*[-:]?\s*\d)\b',
+    caseSensitive: false,
+  );
+  if (otpKeywords.hasMatch(lowerText) || urlMatch != null) {
     final codeMatch = RegExp(r'\b[A-Z0-9]{4,14}\b').firstMatch(fullCleanText);
-    final code = codeMatch?.group(0) ?? _pickProminentTitle(validLines);
+    final payloadStr = urlMatch?.group(0) ??
+        codeMatch?.group(0) ??
+        _pickProminentTitle(validLines);
     return {
       'pHashHex': pHashHex,
       'category': VaultCategory.tempCode.name,
-      'extractedTitle': code.isNotEmpty ? 'Kod: $code' : 'Geçici Kod / Not',
+      'extractedTitle':
+          payloadStr.isNotEmpty ? payloadStr : 'Kod / Bağlantı Kaydı',
       'cleanedText': fullCleanText,
-      'actionPayload': code,
+      'actionPayload': payloadStr,
     };
   }
 
-  // 3B. Check Shopping / Product / E-Commerce (TR & EN)
+  // 2. Check Shopping / Product / Receipt / Price Tag
   final priceRegex = RegExp(
     r'(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?\s*(?:TL|₺|TRY|USD|\$|EUR|€))|(?:(?:TL|₺|\$|€)\s*\d{1,3}(?:[.,]\d{3})*)',
     caseSensitive: false,
   );
   final shoppingKeywords = RegExp(
-    r'\b(sepete ekle|hemen al|ücretsiz kargo|indirim|beden|stokta|trendyol|hepsiburada|amazon|n11|zara|bershka|add to cart|buy now|free shipping|in stock|checkout|discount|fiyat)\b',
+    r'\b(sepete ekle|hemen al|ücretsiz kargo|indirim|beden|stokta|trendyol|hepsiburada|amazon|n11|zara|bershka|add to cart|buy now|free shipping|in stock|checkout|discount|fiyat|toplam|kdv|fiş|fatura)\b',
     caseSensitive: false,
   );
   final priceMatch = priceRegex.firstMatch(fullCleanText);
@@ -511,13 +519,13 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     return {
       'pHashHex': pHashHex,
       'category': VaultCategory.shopping.name,
-      'extractedTitle': title.isNotEmpty ? title : 'Ürün / Alışveriş',
+      'extractedTitle': title.isNotEmpty ? title : 'Ürün / Fiyat Etiketi',
       'cleanedText': fullCleanText,
       'actionPayload': detectedPrice,
     };
   }
 
-  // 3C. Check Anime (TR & EN)
+  // 3. Check Anime / Manga
   final animeKeywords = RegExp(
     r'\b(anime|manga|myanimelist|crunchyroll|anizle|türkanime|turkanime|shonen|shounen|seinen|isekai|ova|subbed|dubbed|altyazılı|fansub|webtoon|manhwa)\b',
     caseSensitive: false,
@@ -537,7 +545,7 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     };
   }
 
-  // 3D. Check Book / Literature (TR & EN)
+  // 4. Check Book / Book Cover / Page
   final bookKeywords = RegExp(
     r'\b(isbn|kitap|roman|yazar|yayınları|yayınevi|çevirmen|sayfa\s*\d+|goodreads|1000kitap|kitapyurdu|chapter\s*\d+|page\s*\d+|author|published by|publisher|novel|bestseller|edebiyat)\b',
     caseSensitive: false,
@@ -554,9 +562,9 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     };
   }
 
-  // 3E. Check Movie / TV Series (TR & EN)
+  // 5. Check Movie / TV Series / Cinema Poster
   final movieKeywords = RegExp(
-    r'\b(imdb|netflix|disney\+|prime video|blutv|mubi|exxen|gain|hbo|apple tv|yönetmen|oyuncular|fragman|sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|s\d{1,2}e\d{1,2}|directed by|starring|trailer|cast|rottentomatoes|letterboxd|film|dizi)\b',
+    r'\b(imdb|netflix|disney\+|prime video|blutv|mubi|exxen|gain|hbo|apple tv|yönetmen|oyuncular|fragman|sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|s\d{1,2}e\d{1,2}|directed by|starring|trailer|cast|rottentomatoes|letterboxd|film|dizi|sinema|vizyon|yakında|coming soon|imax)\b',
     caseSensitive: false,
   );
   if (movieKeywords.hasMatch(lowerText)) {
@@ -570,16 +578,19 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     };
   }
 
-  // Default fallback
+  // Default fallback: If poster-like short prominent text or year -> Movie/Series; else Note
   final yearMatch = RegExp(r'\b(19\d{2}|20[0-2]\d)\b').hasMatch(fullCleanText);
   final fallbackTitle = _pickProminentTitle(validLines);
+  final isPosterLike =
+      validLines.isNotEmpty && validLines.length <= 5 && fallbackTitle.length >= 3;
+
   return {
     'pHashHex': pHashHex,
-    'category': yearMatch
+    'category': (yearMatch || isPosterLike)
         ? VaultCategory.movieSeries.name
         : VaultCategory.tempCode.name,
     'extractedTitle':
-        fallbackTitle.isNotEmpty ? fallbackTitle : 'Ekran Görüntüsü',
+        fallbackTitle.isNotEmpty ? fallbackTitle : 'Galeri Kaydı',
     'cleanedText':
         fullCleanText.isNotEmpty ? fullCleanText : 'Görsel Kayıt',
     'actionPayload':
@@ -609,7 +620,7 @@ String _pickProminentTitle(
   List<Map<String, dynamic>> lines, {
   RegExp? ignoreRegex,
 }) {
-  if (lines.isEmpty) return 'Ekran Görüntüsü';
+  if (lines.isEmpty) return 'Görsel Kayıt';
 
   final episodeStrip = RegExp(
     r'\b(sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|ep\.?\s*\d+|s\d+e\d+|hd|1080p|720p|4k|izle|watch|fragman|trailer|altyazılı|dublaj)\b',
@@ -643,7 +654,7 @@ String _pickProminentTitle(
     }
   }
 
-  return bestText ?? (lines.first['text'] as String? ?? 'Ekran Görüntüsü');
+  return bestText ?? (lines.first['text'] as String? ?? 'Görsel Kayıt');
 }
 
 int hammingDistanceHex(String hexA, String hexB) {
@@ -856,7 +867,7 @@ class MetadataEnricher {
 }
 
 // ============================================================================
-// 6. MAIN APPLICATION & ON-DEMAND SCANNER PIPELINE
+// 6. MAIN APPLICATION & FULL-GALLERY ON-DEMAND SCANNER
 // ============================================================================
 class SnapVaultApp extends StatelessWidget {
   const SnapVaultApp({super.key});
@@ -881,6 +892,12 @@ class SnapVaultApp extends StatelessWidget {
   }
 }
 
+class _AlbumEntry {
+  final AssetPathEntity album;
+  final int count;
+  const _AlbumEntry(this.album, this.count);
+}
+
 class VaultHomeScreen extends StatefulWidget {
   const VaultHomeScreen({super.key});
 
@@ -893,6 +910,9 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
   L10n get _t => L10n(_lang);
 
   List<VaultCard> _cards = [];
+  List<_AlbumEntry> _albums = [];
+  AssetPathEntity? _selectedAlbum;
+
   VaultCategory? _selectedCategory;
   String _searchQuery = '';
   bool _isScanning = false;
@@ -923,7 +943,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       _lang = savedLang;
       _cards = savedCards;
     });
-    await _scanNewScreenshots();
+    await _scanGalleryPhotos();
   }
 
   Future<void> _toggleLanguage() async {
@@ -936,35 +956,42 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
   Future<void> _resetAndRescan() async {
     if (_isScanning) return;
     await SnapVaultDb.clearProcessedAssets();
-    await _scanNewScreenshots();
+    await _scanGalleryPhotos();
   }
 
-  /// Strictly On-Demand Screenshot Scanner:
-  /// 1. Collects all non-empty Screenshot albums (or falls back to main album)
-  /// 2. Scans up to 25 unprocessed screenshots per tap in throttled batches of 5
-  /// 3. Uses `compute(processScreenshotInIsolate, map)` with primitive Map payload
-  Future<void> _scanNewScreenshots() async {
+  /// Requests ONLY Image permission (fixing Android 13/14/15/16 PermissionDelegate33
+  /// bug where RequestType.common fails if READ_MEDIA_VIDEO is absent) and scans
+  /// either the entire gallery ("All Photos") or the user-selected album.
+  Future<void> _scanGalleryPhotos() async {
     if (_isScanning) return;
-
-    final perm = await PhotoManager.requestPermissionExtend();
-    if (!perm.isAuth && !perm.hasAccess) {
-      if (mounted) setState(() => _permissionDenied = true);
-      return;
-    }
-    if (mounted) setState(() => _permissionDenied = false);
 
     setState(() {
       _isScanning = true;
       _scanDoneCount = 0;
       _scanTotalCount = 0;
-      _statusBanner = _t.isTr ? 'Albümler kontrol ediliyor...' : 'Checking albums...';
+      _statusBanner =
+          _t.isTr ? 'Galeri izinleri doğrulanıyor...' : 'Checking gallery access...';
     });
+
+    // CRITICAL FIX: Request ONLY RequestType.image so Android 13+ never checks READ_MEDIA_VIDEO!
+    try {
+      const permOption = PermissionRequestOption(
+        androidPermission: AndroidPermission(
+          type: RequestType.image,
+          mediaLocation: false,
+        ),
+      );
+      await PhotoManager.requestPermissionExtend(requestOption: permOption);
+      // Bypass internal video permission gate in photo_manager when user granted photo access
+      await PhotoManager.setIgnorePermissionCheck(true);
+    } catch (_) {}
 
     final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
     try {
       final paths = await PhotoManager.getAssetPathList(
         type: RequestType.image,
+        hasAll: true,
         filterOption: FilterOptionGroup(
           orders: [
             const OrderOption(type: OrderOptionType.createDate, asc: false),
@@ -976,71 +1003,76 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         if (mounted) {
           setState(() {
             _isScanning = false;
-            _statusBanner = _t.isTr ? 'Galeride fotoğraf bulunamadı.' : 'No images found in gallery.';
+            _permissionDenied = true;
+            _statusBanner = _t.permDenied;
           });
         }
         return;
       }
 
-      // Find all non-empty Screenshot albums (handles devices with multiple Screenshot folders)
-      final List<AssetPathEntity> screenshotAlbums = [];
-      int totalScreenshotCount = 0;
+      if (mounted) {
+        setState(() => _permissionDenied = false);
+      }
 
+      // Build list of non-empty albums (with "All Gallery / Recent" first)
+      final List<_AlbumEntry> nonEmptyAlbums = [];
       for (final album in paths) {
-        final count = await album.assetCountAsync;
-        if (count <= 0) continue;
-        final lowerName = album.name.toLowerCase();
-        if (lowerName.contains('screenshot') ||
-            lowerName.contains('ekran') ||
-            lowerName.contains('screen')) {
-          screenshotAlbums.add(album);
-          totalScreenshotCount += count;
+        final c = await album.assetCountAsync;
+        if (c > 0) {
+          nonEmptyAlbums.add(_AlbumEntry(album, c));
         }
       }
 
-      // If no album is named "Screenshots", use the largest non-empty album (e.g. Recent/All)
-      if (screenshotAlbums.isEmpty) {
-        for (final album in paths) {
-          final count = await album.assetCountAsync;
-          if (count > 0) {
-            screenshotAlbums.add(album);
-            totalScreenshotCount = count;
+      if (nonEmptyAlbums.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _isScanning = false;
+            _statusBanner = _t.isTr
+                ? 'Galeride hiç fotoğraf bulunamadı.'
+                : 'No photos found in gallery.';
+          });
+        }
+        return;
+      }
+
+      // Default to the first album ("All Photos / Tüm Galeri") unless user picked one
+      AssetPathEntity activeAlbum = nonEmptyAlbums.first.album;
+      int activeAlbumCount = nonEmptyAlbums.first.count;
+      if (_selectedAlbum != null) {
+        for (final entry in nonEmptyAlbums) {
+          if (entry.album.id == _selectedAlbum!.id) {
+            activeAlbum = entry.album;
+            activeAlbumCount = entry.count;
             break;
           }
         }
       }
 
-      if (screenshotAlbums.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _isScanning = false;
-            _statusBanner = _t.isTr ? 'Taranacak görüntü bulunamadı.' : 'No screenshots found.';
-          });
-        }
-        return;
+      if (mounted) {
+        setState(() {
+          _albums = nonEmptyAlbums;
+          _selectedAlbum = activeAlbum;
+        });
       }
 
       final processedIds = await SnapVaultDb.loadProcessedAssetIds();
       final List<AssetEntity> newAssets = [];
 
-      // Page through the screenshot album(s) until we gather 25 unprocessed screenshots
-      for (final album in screenshotAlbums) {
-        int page = 0;
-        const int pageSize = 50;
-        while (newAssets.length < 25 && page < 80) {
-          final pageAssets =
-              await album.getAssetListPaged(page: page, size: pageSize);
-          if (pageAssets.isEmpty) break;
-          for (final a in pageAssets) {
-            if (!processedIds.contains(a.id)) {
-              newAssets.add(a);
-              if (newAssets.length >= 25) break;
-            }
+      // Page through the active album (All Gallery or selected album) to collect 25 unprocessed photos
+      int page = 0;
+      const int pageSize = 50;
+      while (newAssets.length < 25 && page < 100) {
+        final pageAssets =
+            await activeAlbum.getAssetListPaged(page: page, size: pageSize);
+        if (pageAssets.isEmpty) break;
+        for (final a in pageAssets) {
+          if (!processedIds.contains(a.id)) {
+            newAssets.add(a);
+            if (newAssets.length >= 25) break;
           }
-          if (pageAssets.length < pageSize) break;
-          page++;
         }
-        if (newAssets.length >= 25) break;
+        if (pageAssets.length < pageSize) break;
+        page++;
       }
 
       if (newAssets.isEmpty) {
@@ -1048,8 +1080,8 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           setState(() {
             _isScanning = false;
             _statusBanner = _t.isTr
-                ? 'Toplam $totalScreenshotCount görüntü incelendi (Yeni görüntü yok).'
-                : 'Checked $totalScreenshotCount images (No new items).';
+                ? 'Toplam $activeAlbumCount fotoğraf incelendi (Tümü zaten tarandı).'
+                : 'Checked $activeAlbumCount photos (All already scanned).';
           });
         }
         return;
@@ -1059,8 +1091,8 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         setState(() {
           _scanTotalCount = newAssets.length;
           _statusBanner = _t.isTr
-              ? 'Bulunan: $totalScreenshotCount görüntü • 25 yeni görüntü işleniyor...'
-              : 'Found: $totalScreenshotCount images • Processing batch of ${newAssets.length}...';
+              ? 'Galeri ($activeAlbumCount foto) • ${newAssets.length} fotoğraf işleniyor...'
+              : 'Gallery ($activeAlbumCount photos) • Processing ${newAssets.length}...';
         });
       }
 
@@ -1091,7 +1123,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
               continue;
             }
 
-            // 1. Run on-device ML Kit OCR (wrapped in its own try/catch so even pure-image screenshots work)
             final rawLines = <Map<String, dynamic>>[];
             try {
               final inputImage = InputImage.fromFilePath(file.path);
@@ -1108,11 +1139,8 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                   });
                 }
               }
-            } catch (_) {
-              // OCR failed on this image format; proceed with visual card creation
-            }
+            } catch (_) {}
 
-            // 2. Run pHash & Bilingual Classifier inside background Isolate using `compute()`
             final safeId = asset.id.replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '_');
             final targetThumbPath = p.join(
               thumbDir.path,
@@ -1142,8 +1170,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
             final capturedMs = asset.createDateTime.millisecondsSinceEpoch;
 
-            // 3. Smart Burst-Shot Grouping:
-            //    Merge only if BOTH captured within 4 seconds AND perceptually very similar (Hamming <= 6)
             VaultCard? burstTarget;
             for (final existing in _cards) {
               final timeDiffMs = (capturedMs - existing.capturedEpochMs).abs();
@@ -1343,36 +1369,49 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF0B0E14),
         elevation: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        title: Row(
           children: [
-            Row(
-              children: [
-                Container(
-                  width: 10,
-                  height: 10,
-                  decoration: const BoxDecoration(
-                    color: Color(0xFF10B981),
-                    shape: BoxShape.circle,
-                  ),
+            // Custom SnapVault Neon Brand Emblem
+            Container(
+              width: 34,
+              height: 34,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF6366F1), Color(0xFF10B981)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  _t.appTitle,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 20,
-                    letterSpacing: -0.4,
-                  ),
-                ),
-              ],
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Icon(
+                Icons.shield_moon_rounded,
+                color: Colors.white,
+                size: 20,
+              ),
             ),
-            Text(
-              _t.subtitle,
-              style: const TextStyle(
-                fontSize: 11,
-                color: Colors.white54,
-                fontWeight: FontWeight.w400,
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _t.appTitle,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 19,
+                      letterSpacing: -0.4,
+                    ),
+                  ),
+                  Text(
+                    _t.subtitle,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Colors.white54,
+                      fontWeight: FontWeight.w400,
+                    ),
+                  ),
+                ],
               ),
             ),
           ],
@@ -1425,7 +1464,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                     const SizedBox(width: 10),
                   ] else ...[
                     const Icon(
-                      Icons.info_outline_rounded,
+                      Icons.check_circle_outline_rounded,
                       size: 15,
                       color: Color(0xFF10B981),
                     ),
@@ -1444,9 +1483,81 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
               ),
             ),
 
+          // Album Selector Row (All Gallery, Camera, Screenshots, WhatsApp, etc.)
+          if (_albums.isNotEmpty)
+            SizedBox(
+              height: 38,
+              child: ListView.builder(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
+                itemCount: _albums.length,
+                itemBuilder: (ctx, idx) {
+                  final entry = _albums[idx];
+                  final isSel = _selectedAlbum?.id == entry.album.id;
+                  final displayAlbumName =
+                      entry.album.isAll ? _t.allGalleryAlbum : entry.album.name;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: InkWell(
+                      onTap: _isScanning
+                          ? null
+                          : () {
+                              setState(() => _selectedAlbum = entry.album);
+                              _scanGalleryPhotos();
+                            },
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isSel
+                              ? const Color(0xFF10B981).withValues(alpha: 0.2)
+                              : const Color(0xFF151923),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: isSel
+                                ? const Color(0xFF10B981)
+                                : Colors.white10,
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              entry.album.isAll
+                                  ? Icons.photo_library_rounded
+                                  : Icons.folder_open_rounded,
+                              size: 13,
+                              color: isSel
+                                  ? const Color(0xFF10B981)
+                                  : Colors.white54,
+                            ),
+                            const SizedBox(width: 5),
+                            Text(
+                              '$displayAlbumName (${entry.count})',
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight:
+                                    isSel ? FontWeight.bold : FontWeight.w500,
+                                color: isSel
+                                    ? const Color(0xFF10B981)
+                                    : Colors.white70,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+
           // Instant Offline Search Bar + Bulk Gallery Clean-up Button
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 6),
             child: Row(
               children: [
                 Expanded(
@@ -1585,7 +1696,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _isScanning ? null : _scanNewScreenshots,
+        onPressed: _isScanning ? null : _scanGalleryPhotos,
         backgroundColor: const Color(0xFF6366F1),
         foregroundColor: Colors.white,
         icon: const Icon(Icons.document_scanner_rounded),
@@ -1643,9 +1754,14 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
               style: const TextStyle(color: Colors.white70, fontSize: 14),
             ),
             const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: PhotoManager.openSetting,
-              child: Text(_t.openSettings),
+            ElevatedButton.icon(
+              onPressed: () async {
+                await PhotoManager.openSetting();
+                await Future.delayed(const Duration(seconds: 1));
+                await _scanGalleryPhotos();
+              },
+              icon: const Icon(Icons.settings_rounded),
+              label: Text(_t.openSettings),
             ),
           ],
         ),
@@ -1661,15 +1777,20 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              padding: const EdgeInsets.all(20),
+              width: 76,
+              height: 76,
               decoration: BoxDecoration(
-                color: const Color(0xFF151923),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF6366F1), Color(0xFF10B981)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
                 borderRadius: BorderRadius.circular(24),
               ),
               child: const Icon(
-                Icons.auto_awesome_motion_rounded,
-                size: 48,
-                color: Color(0xFF6366F1),
+                Icons.shield_moon_rounded,
+                size: 42,
+                color: Colors.white,
               ),
             ),
             const SizedBox(height: 18),
@@ -1834,8 +1955,8 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                 const SizedBox(height: 8),
                 Text(
                   _t.isTr
-                      ? 'Temizlenmiş OCR Metni (Sosyal Medya Gürültüsü Ayıklandı):'
-                      : 'Cleaned OCR Text (Social UI Clutter Stripped):',
+                      ? 'Okunan Metin (OCR):'
+                      : 'Extracted Text (OCR):',
                   style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,

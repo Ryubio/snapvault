@@ -4,9 +4,10 @@
     <!-- Network used ONLY on-demand when enriching card posters/metadata via free public APIs -->
     <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Scoped Storage Permissions for Screenshots Album Access -->
+    <!-- Scoped Storage Permissions for Full Gallery & Screenshots Access -->
     <!-- Android 13+ (API 33+) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <!-- Android 14+ (API 34+) Partial Photo Access Compatibility -->
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <!-- Android 12 and below (API <= 32) -->
@@ -43,18 +44,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- Force-remove any transitive background services or WorkManager initializers -->
-        <provider
-            android:name="androidx.startup.InitializationProvider"
-            android:authorities="${applicationId}.androidx-startup"
-            android:exported="false"
-            tools:node="merge">
-            <meta-data
-                android:name="androidx.work.WorkManagerInitializer"
-                android:value="androidx.startup"
-                tools:node="remove" />
-        </provider>
 
         <meta-data
             android:name="flutterEmbedding"
