@@ -2,9 +2,10 @@
 // SnapVault — Zero-Background Bilingual (TR/EN) Screenshot Organizer & Vault
 // Architecture:
 //   1. Strict On-Demand Execution (Zero background services, zero battery drain)
-//   2. Isolate-Offloaded Perceptual Hashing (64-bit dHash) & Coordinate OCR Filtering
-//   3. Burst-Shot Clustering (<= 5s window or Hamming distance <= 8)
-//   4. Bilingual (TR/EN) Social UI Noise Stripper & Deterministic Category Engine
+//   2. Isolate-Offloaded Perceptual Hashing (64-bit dHash) via compute() with
+//      primitive Map payload (100% free of closure/State capture exceptions)
+//   3. Full-Resolution Coordinate OCR Filtering & Bilingual (TR/EN) Classifier
+//   4. Smart Burst-Shot Clustering (same category + <= 4s & pHash dist <= 6)
 //   5. Keyless Public API Enrichment (Jikan / TVMaze / iTunes / OpenLibrary)
 //   6. Native OS Gallery Purge (PhotoManager.editor.deleteWithIds)
 // ============================================================================
@@ -12,9 +13,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:isolate';
-import 'dart:typed_data';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
@@ -49,18 +49,16 @@ class L10n {
   String get searchHint => isTr
       ? 'Film, anime, kitap, ürün veya IBAN ara...'
       : 'Search movie, anime, book, product or IBAN...';
-  String get scanNow => isTr ? 'Yeni Görüntüleri Tara' : 'Scan New Screenshots';
+  String get scanNow => isTr ? 'Sonraki 25 Görüntüyü Tara' : 'Scan Next 25 Screenshots';
+  String get rescanAll => isTr ? 'Baştan Tara' : 'Rescan All';
   String get scanning => isTr ? 'Taranıyor...' : 'Scanning...';
   String get catAll => isTr ? 'Tümü' : 'All';
   String get catMovie => isTr ? 'Film / Dizi' : 'Movie / Series';
   String get catAnime => isTr ? 'Anime' : 'Anime';
   String get catBook => isTr ? 'Kitap' : 'Book';
   String get catShopping => isTr ? 'Alışveriş' : 'Shopping';
-  String get catTemp => isTr ? 'IBAN / Kod' : 'IBAN / Code';
+  String get catTemp => isTr ? 'IBAN / Not' : 'IBAN / Note';
 
-  String get purgeGalleryBtn => isTr
-      ? 'Galeriden Çöpleri Sil'
-      : 'Purge Raw Screenshots';
   String get copyPayload => isTr ? 'Kopyala' : 'Copy';
   String get copiedToast =>
       isTr ? 'Panoya kopyalandı!' : 'Copied to clipboard!';
@@ -69,20 +67,20 @@ class L10n {
   String get deleteCard => isTr ? 'Kartı Sil' : 'Delete Card';
   String get purgedBadge =>
       isTr ? 'Galeriden Temizlendi' : 'Purged from Gallery';
-  String get burstBadge => isTr ? 'Seri Çekim' : 'Burst Group';
+  String get burstBadge => isTr ? 'Seri' : 'Burst';
   String get emptyStateTitle => isTr
       ? 'Henüz İşlenmiş Ekran Görüntüsü Yok'
       : 'No Processed Screenshots Yet';
   String get emptyStateSub => isTr
-      ? 'SnapVault arka planda çalışmaz ve pil tüketmez.\n"Screenshots" klasöründeki yeni görüntüleri taramak için aşağıdaki butona dokunun.'
-      : 'SnapVault never runs in the background or drains battery.\nTap the button below to scan new items from your "Screenshots" album.';
+      ? 'SnapVault arka planda çalışmaz ve pil tüketmez.\nEkran görüntülerinizi taramak için aşağıdaki "Sonraki 25 Görüntüyü Tara" butonuna dokunun.'
+      : 'SnapVault never runs in the background or drains battery.\nTap "Scan Next 25 Screenshots" below to organize your screenshots.';
   String get permDenied => isTr
       ? 'Galeri izni gerekli. Lütfen ayarlardan fotoğraf erişimine izin verin.'
       : 'Gallery permission required. Please grant photo access in Settings.';
   String get openSettings => isTr ? 'Ayarları Aç' : 'Open Settings';
   String scanCompleteMsg(int added, int grouped) => isTr
-      ? '$added yeni kart oluşturuldu ($grouped seri görüntü birleştirildi).'
-      : '$added new cards created ($grouped burst shots merged).';
+      ? '$added yeni kart eklendi ($grouped seri çekim birleştirildi).'
+      : '$added new cards added ($grouped burst shots merged).';
   String purgeSuccessMsg(int count) => isTr
       ? '$count orijinal ekran görüntüsü telefon galerisinden silindi!'
       : '$count raw screenshots deleted from device gallery!';
@@ -122,7 +120,7 @@ class VaultCard {
   final VaultCategory category;
   final String extractedTitle;
   final String cleanedOcrText;
-  final String? actionPayload; // IBAN, OTP code, price tag, tracking number
+  final String? actionPayload;
   final String? apiTitle;
   final String? apiSubtitle;
   final String? apiPosterUrl;
@@ -210,10 +208,10 @@ class VaultCard {
       (e) => e.name == catName,
       orElse: () => VaultCategory.tempCode,
     );
-    final decodedGroup = (jsonDecode(map['grouped_asset_ids'] as String? ?? '[]')
-            as List<dynamic>)
-        .map((e) => e.toString())
-        .toList();
+    final decodedGroup =
+        (jsonDecode(map['grouped_asset_ids'] as String? ?? '[]') as List<dynamic>)
+            .map((e) => e.toString())
+            .toList();
 
     return VaultCard(
       id: map['id'] as String,
@@ -314,6 +312,11 @@ class SnapVaultDb {
     );
   }
 
+  static Future<void> clearProcessedAssets() async {
+    final db = await instance;
+    await db.delete('processed_assets');
+  }
+
   static Future<void> upsertCard(VaultCard card) async {
     final db = await instance;
     await db.insert(
@@ -351,175 +354,145 @@ class SnapVaultDb {
 
 // ============================================================================
 // 4. ISOLATE-SAFE PERCEPTUAL HASHING & BILINGUAL CLASSIFICATION ENGINE
+//    Uses primitive Map<String, dynamic> with compute() so Dart NEVER captures
+//    State/BuildContext across Isolate boundaries!
 // ============================================================================
 
-/// Lightweight serializable OCR block passed into the background Isolate
-class RawOcrLine {
-  final String text;
-  final double left;
-  final double top;
-  final double right;
-  final double bottom;
-
-  const RawOcrLine({
-    required this.text,
-    required this.left,
-    required this.top,
-    required this.right,
-    required this.bottom,
-  });
-
-  double get height => (bottom - top).abs();
-  double get centerY => (top + bottom) / 2.0;
-  double get centerX => (left + right) / 2.0;
-}
-
-class IsolateClassifyInput {
-  final Uint8List thumbBytes;
-  final String targetThumbFilePath;
-  final List<RawOcrLine> ocrLines;
-
-  const IsolateClassifyInput({
-    required this.thumbBytes,
-    required this.targetThumbFilePath,
-    required this.ocrLines,
-  });
-}
-
-class IsolateClassifyOutput {
-  final int width;
-  final int height;
-  final String pHashHex;
-  final VaultCategory category;
-  final String extractedTitle;
-  final String cleanedText;
-  final String? actionPayload;
-
-  const IsolateClassifyOutput({
-    required this.width,
-    required this.height,
-    required this.pHashHex,
-    required this.category,
-    required this.extractedTitle,
-    required this.cleanedText,
-    this.actionPayload,
-  });
-}
-
-/// Top-level function executed inside `Isolate.run()` so decoding, resizing,
-/// perceptual hashing (64-bit dHash), coordinate filtering, and regex
-/// classification NEVER touch the UI thread.
-Future<IsolateClassifyOutput> processScreenshotInIsolate(
-  IsolateClassifyInput input,
+Future<Map<String, dynamic>> processScreenshotInIsolate(
+  Map<String, dynamic> payload,
 ) async {
+  final Uint8List thumbBytes = payload['thumbBytes'] as Uint8List;
+  final String targetThumbFilePath = payload['targetThumbFilePath'] as String;
+  final int origW = (payload['origWidth'] as int?) ?? 1080;
+  final int origH = (payload['origHeight'] as int?) ?? 2400;
+  final List<dynamic> rawOcrList = payload['ocrLines'] as List<dynamic>;
+
   // 1. Decode thumbnail & compute 64-bit Difference Perceptual Hash (dHash)
-  final decoded = img.decodeImage(input.thumbBytes);
-  int imgW = decoded?.width ?? 1080;
-  int imgH = decoded?.height ?? 2400;
   String pHashHex = '0000000000000000';
+  try {
+    final decoded = img.decodeImage(thumbBytes);
+    if (decoded != null) {
+      final preview =
+          decoded.width > 400 ? img.copyResize(decoded, width: 400) : decoded;
+      final jpgBytes = img.encodeJpg(preview, quality: 82);
+      await File(targetThumbFilePath).writeAsBytes(jpgBytes, flush: false);
 
-  if (decoded != null) {
-    // Save compact 400px-wide cached JPEG for zero-jank UI rendering even after Gallery deletion
-    final preview =
-        decoded.width > 400 ? img.copyResize(decoded, width: 400) : decoded;
-    final jpgBytes = img.encodeJpg(preview, quality: 82);
-    await File(input.targetThumbFilePath).writeAsBytes(jpgBytes, flush: false);
-
-    // 9x8 grayscale grid for 64-bit horizontal gradient dHash
-    final small = img.copyResize(
-      decoded,
-      width: 9,
-      height: 8,
-      interpolation: img.Interpolation.average,
-    );
-    BigInt bits = BigInt.zero;
-    int bitIndex = 0;
-    for (int y = 0; y < 8; y++) {
-      for (int x = 0; x < 8; x++) {
-        final pLeft = small.getPixel(x, y);
-        final pRight = small.getPixel(x + 1, y);
-        final lumLeft =
-            0.299 * pLeft.r + 0.587 * pLeft.g + 0.114 * pLeft.b;
-        final lumRight =
-            0.299 * pRight.r + 0.587 * pRight.g + 0.114 * pRight.b;
-        if (lumLeft > lumRight) {
-          bits |= (BigInt.one << bitIndex);
+      final small = img.copyResize(
+        decoded,
+        width: 9,
+        height: 8,
+        interpolation: img.Interpolation.average,
+      );
+      BigInt bits = BigInt.zero;
+      int bitIndex = 0;
+      for (int y = 0; y < 8; y++) {
+        for (int x = 0; x < 8; x++) {
+          final pLeft = small.getPixel(x, y);
+          final pRight = small.getPixel(x + 1, y);
+          final lumLeft =
+              0.299 * pLeft.r + 0.587 * pLeft.g + 0.114 * pLeft.b;
+          final lumRight =
+              0.299 * pRight.r + 0.587 * pRight.g + 0.114 * pRight.b;
+          if (lumLeft > lumRight) {
+            bits |= (BigInt.one << bitIndex);
+          }
+          bitIndex++;
         }
-        bitIndex++;
+      }
+      pHashHex = bits.toRadixString(16).padLeft(16, '0');
+    } else {
+      await File(targetThumbFilePath).writeAsBytes(thumbBytes, flush: false);
+    }
+  } catch (_) {
+    await File(targetThumbFilePath).writeAsBytes(thumbBytes, flush: false);
+  }
+
+  // 2. Coordinate-Based Bounding-Box Filtering using true full-resolution dimensions
+  final imgW = origW > 0 ? origW : 1080;
+  final imgH = origH > 0 ? origH : 2400;
+
+  final List<Map<String, dynamic>> validLines = [];
+  for (final item in rawOcrList) {
+    final map = item as Map<String, dynamic>;
+    final String text = (map['text'] as String?) ?? '';
+    final double left = (map['left'] as num?)?.toDouble() ?? 0.0;
+    final double top = (map['top'] as num?)?.toDouble() ?? 0.0;
+    final double right = (map['right'] as num?)?.toDouble() ?? 0.0;
+    final double bottom = (map['bottom'] as num?)?.toDouble() ?? 0.0;
+
+    final centerY = (top + bottom) / 2.0;
+    final centerX = (left + right) / 2.0;
+    final normY = centerY / imgH;
+    final normX = centerX / imgW;
+
+    // Ignore top 7% (clock/battery status bar) and bottom 6% (gesture nav bar)
+    if (normY < 0.07 || normY > 0.94) continue;
+    // Ignore far-right TikTok/Reels vertical icon column
+    if (normX > 0.86 && normY > 0.45) continue;
+
+    final cleaned = _stripBilingualSocialClutter(text);
+    if (cleaned.length >= 2) {
+      validLines.add({
+        'text': cleaned,
+        'height': (bottom - top).abs(),
+      });
+    }
+  }
+
+  // Fallback if coordinate filter was too strict for a cropped screenshot
+  if (validLines.isEmpty && rawOcrList.isNotEmpty) {
+    for (final item in rawOcrList) {
+      final map = item as Map<String, dynamic>;
+      final cleaned = _stripBilingualSocialClutter((map['text'] as String?) ?? '');
+      if (cleaned.length >= 2) {
+        validLines.add({
+          'text': cleaned,
+          'height': ((map['bottom'] as num? ?? 20) - (map['top'] as num? ?? 0))
+              .abs()
+              .toDouble(),
+        });
       }
     }
-    pHashHex = bits.toRadixString(16).padLeft(16, '0');
-  } else {
-    await File(input.targetThumbFilePath)
-        .writeAsBytes(input.thumbBytes, flush: false);
   }
 
-  // 2. Coordinate-Based Bounding-Box Filtering
-  // Ignore top 12% (status bar: clock, carrier, battery, notifications)
-  // Ignore bottom 10% (navigation bar, comment input bar, home tabs)
-  // Ignore right-side social action rail (x > 82% width & y > 40% height)
-  final List<RawOcrLine> validLines = [];
-  for (final line in input.ocrLines) {
-    final normY = imgH > 0 ? (line.centerY / imgH) : 0.5;
-    final normX = imgW > 0 ? (line.centerX / imgW) : 0.5;
-
-    if (normY < 0.12 || normY > 0.90) continue;
-    if (normX > 0.82 && normY > 0.40) continue;
-
-    final cleaned = _stripBilingualSocialClutter(line.text);
-    if (cleaned.length >= 2) {
-      validLines.add(
-        RawOcrLine(
-          text: cleaned,
-          left: line.left,
-          top: line.top,
-          right: line.right,
-          bottom: line.bottom,
-        ),
-      );
-    }
-  }
-
-  final fullCleanText = validLines.map((l) => l.text).join('\n');
+  final fullCleanText =
+      validLines.map((l) => l['text'] as String).join('\n');
   final lowerText = fullCleanText.toLowerCase();
 
   // 3. Deterministic Bilingual (TR/EN) Regex & Keyword Classification
-  // 3A. Check Temporary / IBAN / Verification Code / Wi-Fi
+  // 3A. Check Temporary / IBAN / Verification Code
   final ibanRegex = RegExp(
     r'\bTR\s*\d{2}\s*(?:\d{4}\s*){5}\d{2}\b',
     caseSensitive: false,
   );
   final ibanMatch = ibanRegex.firstMatch(fullCleanText);
   if (ibanMatch != null) {
-    final rawIban = ibanMatch.group(0)!.replaceAll(RegExp(r'\s+'), '').toUpperCase();
-    return IsolateClassifyOutput(
-      width: imgW,
-      height: imgH,
-      pHashHex: pHashHex,
-      category: VaultCategory.tempCode,
-      extractedTitle: 'IBAN (${rawIban.substring(0, 6)}...${rawIban.substring(rawIban.length - 4)})',
-      cleanedText: fullCleanText,
-      actionPayload: rawIban,
-    );
+    final rawIban =
+        ibanMatch.group(0)!.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+    return {
+      'pHashHex': pHashHex,
+      'category': VaultCategory.tempCode.name,
+      'extractedTitle':
+          'IBAN (${rawIban.substring(0, 6)}...${rawIban.substring(rawIban.length - 4)})',
+      'cleanedText': fullCleanText,
+      'actionPayload': rawIban,
+    };
   }
 
   final otpKeywords = RegExp(
-    r'\b(doğrulama kodu|onay kodu|şifre|kargo takip|iade kodu|verification code|security code|otp|passcode|tracking number|pin)\b',
+    r'\b(doğrulama kodu|onay kodu|şifre|kargo takip|iade kodu|verification code|security code|otp|passcode|tracking number|iban)\b',
     caseSensitive: false,
   );
   if (otpKeywords.hasMatch(lowerText)) {
-    final codeMatch =
-        RegExp(r'\b[A-Z0-9]{4,12}\b').firstMatch(fullCleanText);
+    final codeMatch = RegExp(r'\b[A-Z0-9]{4,14}\b').firstMatch(fullCleanText);
     final code = codeMatch?.group(0) ?? _pickProminentTitle(validLines);
-    return IsolateClassifyOutput(
-      width: imgW,
-      height: imgH,
-      pHashHex: pHashHex,
-      category: VaultCategory.tempCode,
-      extractedTitle: code.isNotEmpty ? 'Kod: $code' : 'Geçici Kod / Not',
-      cleanedText: fullCleanText,
-      actionPayload: code,
-    );
+    return {
+      'pHashHex': pHashHex,
+      'category': VaultCategory.tempCode.name,
+      'extractedTitle': code.isNotEmpty ? 'Kod: $code' : 'Geçici Kod / Not',
+      'cleanedText': fullCleanText,
+      'actionPayload': code,
+    };
   }
 
   // 3B. Check Shopping / Product / E-Commerce (TR & EN)
@@ -528,172 +501,151 @@ Future<IsolateClassifyOutput> processScreenshotInIsolate(
     caseSensitive: false,
   );
   final shoppingKeywords = RegExp(
-    r'\b(sepete ekle|hemen al|ücretsiz kargo|indirim|beden|stokta|trendyol|hepsiburada|amazon|n11|zara|bershka|add to cart|buy now|free shipping|in stock|checkout|discount)\b',
+    r'\b(sepete ekle|hemen al|ücretsiz kargo|indirim|beden|stokta|trendyol|hepsiburada|amazon|n11|zara|bershka|add to cart|buy now|free shipping|in stock|checkout|discount|fiyat)\b',
     caseSensitive: false,
   );
   final priceMatch = priceRegex.firstMatch(fullCleanText);
   if (shoppingKeywords.hasMatch(lowerText) || priceMatch != null) {
     final detectedPrice = priceMatch?.group(0)?.trim();
     final title = _pickProminentTitle(validLines, ignoreRegex: priceRegex);
-    return IsolateClassifyOutput(
-      width: imgW,
-      height: imgH,
-      pHashHex: pHashHex,
-      category: VaultCategory.shopping,
-      extractedTitle: title.isNotEmpty ? title : 'Ürün / Alışveriş',
-      cleanedText: fullCleanText,
-      actionPayload: detectedPrice,
-    );
+    return {
+      'pHashHex': pHashHex,
+      'category': VaultCategory.shopping.name,
+      'extractedTitle': title.isNotEmpty ? title : 'Ürün / Alışveriş',
+      'cleanedText': fullCleanText,
+      'actionPayload': detectedPrice,
+    };
   }
 
   // 3C. Check Anime (TR & EN)
   final animeKeywords = RegExp(
-    r'\b(anime|manga|myanimelist|crunchyroll|anizle|türkanime|turkanime|shonen|shounen|seinen|isekai|ova|subbed|dubbed|altyazılı|fansub|bölüm\s*\d+|episode\s*\d+|ep\s*\d+)\b',
+    r'\b(anime|manga|myanimelist|crunchyroll|anizle|türkanime|turkanime|shonen|shounen|seinen|isekai|ova|subbed|dubbed|altyazılı|fansub|webtoon|manhwa)\b',
     caseSensitive: false,
   );
   final japaneseCue = RegExp(
-    r'\b(naruto|one piece|bleach|attack on titan|shingeki|jujutsu kaisen|demon slayer|kimetsu|death note|fullmetal|hunter x hunter|chainsaw man|frieren|solo leveling|steins|evangelion|gintama|berserk|vinland|haikyuu|blue lock|boku no hero|my hero academia|dan da dan|dandadan|one punch)\b',
+    r'\b(naruto|one piece|bleach|attack on titan|shingeki|jujutsu kaisen|demon slayer|kimetsu|death note|fullmetal|hunter x hunter|chainsaw man|frieren|solo leveling|steins|evangelion|gintama|berserk|vinland|haikyuu|blue lock|boku no hero|my hero academia|dan da dan|dandadan|one punch|dragon ball|uzumaki|uchiha|gojo|sukuna|luffy|zoro)\b',
     caseSensitive: false,
   );
-  if (japaneseCue.hasMatch(lowerText) ||
-      (animeKeywords.hasMatch(lowerText) &&
-          (lowerText.contains('anime') ||
-              lowerText.contains('manga') ||
-              lowerText.contains('mal') ||
-              lowerText.contains('crunchyroll') ||
-              lowerText.contains('fansub') ||
-              lowerText.contains('türkanime')))) {
+  if (japaneseCue.hasMatch(lowerText) || animeKeywords.hasMatch(lowerText)) {
     final title = _pickProminentTitle(validLines);
-    return IsolateClassifyOutput(
-      width: imgW,
-      height: imgH,
-      pHashHex: pHashHex,
-      category: VaultCategory.anime,
-      extractedTitle: title,
-      cleanedText: fullCleanText,
-    );
+    return {
+      'pHashHex': pHashHex,
+      'category': VaultCategory.anime.name,
+      'extractedTitle': title,
+      'cleanedText': fullCleanText,
+      'actionPayload': null,
+    };
   }
 
   // 3D. Check Book / Literature (TR & EN)
   final bookKeywords = RegExp(
-    r'\b(isbn|kitap|roman|yazar|yayınları|yayınevi|çevirmen|sayfa\s*\d+|goodreads|1000kitap|kitapyurdu|bölüm|chapter\s*\d+|page\s*\d+|author|published by|publisher|novel|bestseller|edebiyat)\b',
+    r'\b(isbn|kitap|roman|yazar|yayınları|yayınevi|çevirmen|sayfa\s*\d+|goodreads|1000kitap|kitapyurdu|chapter\s*\d+|page\s*\d+|author|published by|publisher|novel|bestseller|edebiyat)\b',
     caseSensitive: false,
   );
   if (bookKeywords.hasMatch(lowerText) ||
-      (validLines.length >= 6 && fullCleanText.length > 380)) {
+      (validLines.length >= 6 && fullCleanText.length > 350)) {
     final title = _pickProminentTitle(validLines);
-    return IsolateClassifyOutput(
-      width: imgW,
-      height: imgH,
-      pHashHex: pHashHex,
-      category: VaultCategory.book,
-      extractedTitle: title,
-      cleanedText: fullCleanText,
-    );
+    return {
+      'pHashHex': pHashHex,
+      'category': VaultCategory.book.name,
+      'extractedTitle': title,
+      'cleanedText': fullCleanText,
+      'actionPayload': null,
+    };
   }
 
   // 3E. Check Movie / TV Series (TR & EN)
   final movieKeywords = RegExp(
-    r'\b(imdb|netflix|disney\+|prime video|blutv|mubi|exxen|gain|hbo|apple tv|yönetmen|oyuncular|fragman|sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|s\d{1,2}e\d{1,2}|directed by|starring|trailer|cast|rottentomatoes|letterboxd)\b',
+    r'\b(imdb|netflix|disney\+|prime video|blutv|mubi|exxen|gain|hbo|apple tv|yönetmen|oyuncular|fragman|sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|s\d{1,2}e\d{1,2}|directed by|starring|trailer|cast|rottentomatoes|letterboxd|film|dizi)\b',
     caseSensitive: false,
   );
   if (movieKeywords.hasMatch(lowerText)) {
     final title = _pickProminentTitle(validLines);
-    return IsolateClassifyOutput(
-      width: imgW,
-      height: imgH,
-      pHashHex: pHashHex,
-      category: VaultCategory.movieSeries,
-      extractedTitle: title,
-      cleanedText: fullCleanText,
-    );
+    return {
+      'pHashHex': pHashHex,
+      'category': VaultCategory.movieSeries.name,
+      'extractedTitle': title,
+      'cleanedText': fullCleanText,
+      'actionPayload': null,
+    };
   }
 
-  // Default fallback: If short title with year -> Movie/Series; else Temp/Note
+  // Default fallback
   final yearMatch = RegExp(r'\b(19\d{2}|20[0-2]\d)\b').hasMatch(fullCleanText);
   final fallbackTitle = _pickProminentTitle(validLines);
-  return IsolateClassifyOutput(
-    width: imgW,
-    height: imgH,
-    pHashHex: pHashHex,
-    category:
-        yearMatch ? VaultCategory.movieSeries : VaultCategory.tempCode,
-    extractedTitle:
-        fallbackTitle.isNotEmpty ? fallbackTitle : 'Ekran Görüntüsü Notu',
-    cleanedText: fullCleanText,
-    actionPayload: yearMatch ? null : fallbackTitle,
-  );
+  return {
+    'pHashHex': pHashHex,
+    'category': yearMatch
+        ? VaultCategory.movieSeries.name
+        : VaultCategory.tempCode.name,
+    'extractedTitle':
+        fallbackTitle.isNotEmpty ? fallbackTitle : 'Ekran Görüntüsü',
+    'cleanedText':
+        fullCleanText.isNotEmpty ? fullCleanText : 'Görsel Kayıt',
+    'actionPayload':
+        (!yearMatch && fallbackTitle.isNotEmpty) ? fallbackTitle : null,
+  };
 }
 
-/// Strips Turkish & English social media UI buttons, counters, and clutter
 String _stripBilingualSocialClutter(String raw) {
   var s = raw.trim();
   if (s.isEmpty) return '';
 
-  // Drop pure timestamps, battery %, view counts, and social handles
   final pureNoiseLine = RegExp(
     r'^(\d{1,2}:\d{2}|\d+\s*(sn|dk|sa|gün|hafta|ay|yıl|s|m|h|d|w|y)\s*(önce|ago)?|\d+[.,]?\d*\s*(b|bin|m|mn|k|görüntüleme|views|likes|beğeni|yorum|comments)|@[a-zA-Z0-9_.\-]+|#\S+)$',
     caseSensitive: false,
   );
   if (pureNoiseLine.hasMatch(s)) return '';
 
-  // Remove inline bilingual UI chrome words
   final uiWords = RegExp(
-    r'\b(beğen|yorum yap|yorumlar|paylaş|kaydet|takip et|takip ediliyor|abone ol|daha fazla|devamını oku|sesi aç|orijinal ses|like|comment|share|save|follow|following|subscribe|more|read more|original audio|sponsored|प्रायोजित|reklam)\b',
+    r'\b(beğen|yorum yap|yorumlar|paylaş|kaydet|takip et|takip ediliyor|abone ol|daha fazla|devamını oku|sesi aç|orijinal ses|like|comment|share|save|follow|following|subscribe|more|read more|original audio|sponsored|reklam)\b',
     caseSensitive: false,
   );
   s = s.replaceAll(uiWords, ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
   return s;
 }
 
-/// Selects the most likely title from OCR bounding boxes using visual prominence
-/// (largest font height + cleanest alphabetic ratio)
 String _pickProminentTitle(
-  List<RawOcrLine> lines, {
+  List<Map<String, dynamic>> lines, {
   RegExp? ignoreRegex,
 }) {
-  if (lines.isEmpty) return 'Adsız Kayıt';
+  if (lines.isEmpty) return 'Ekran Görüntüsü';
 
   final episodeStrip = RegExp(
     r'\b(sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|ep\.?\s*\d+|s\d+e\d+|hd|1080p|720p|4k|izle|watch|fragman|trailer|altyazılı|dublaj)\b',
     caseSensitive: false,
   );
 
-  RawOcrLine? bestLine;
+  String? bestText;
   double bestScore = -1.0;
 
   for (final l in lines) {
-    var candidate = l.text.replaceAll(episodeStrip, ' ').trim();
+    final rawText = (l['text'] as String?) ?? '';
+    final height = (l['height'] as num?)?.toDouble() ?? 16.0;
+
+    var candidate = rawText.replaceAll(episodeStrip, ' ').trim();
     if (ignoreRegex != null) {
       candidate = candidate.replaceAll(ignoreRegex, ' ').trim();
     }
     candidate = candidate.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (candidate.length < 2 || candidate.length > 65) continue;
+    if (candidate.length < 2 || candidate.length > 70) continue;
 
-    // Count letters vs symbols
-    final letters = RegExp(r'[a-zA-ZçğıöşüÇĞİÖŞÜ]').allMatches(candidate).length;
+    final letters =
+        RegExp(r'[a-zA-ZçğıöşüÇĞİÖŞÜ0-9]').allMatches(candidate).length;
     if (letters < 2) continue;
 
     final alphaRatio = letters / candidate.length;
-    final heightScore = l.height;
-    final score = heightScore * (0.5 + alphaRatio);
+    final score = height * (0.5 + alphaRatio);
 
     if (score > bestScore) {
       bestScore = score;
-      bestLine = RawOcrLine(
-        text: candidate,
-        left: l.left,
-        top: l.top,
-        right: l.right,
-        bottom: l.bottom,
-      );
+      bestText = candidate;
     }
   }
 
-  return bestLine?.text ?? lines.first.text;
+  return bestText ?? (lines.first['text'] as String? ?? 'Ekran Görüntüsü');
 }
 
-/// Computes Hamming distance between two 64-bit hex perceptual hashes
 int hammingDistanceHex(String hexA, String hexB) {
   try {
     final a = BigInt.parse(hexA, radix: 16);
@@ -759,7 +711,6 @@ class MetadataEnricher {
     }
   }
 
-  /// Free Keyless Anime API: Jikan v4 (MyAnimeList Official Public Mirror)
   static Future<EnrichedMetadata?> _fetchAnimeJikan(String query) async {
     final uri = Uri.https(
       'api.jikan.moe',
@@ -795,9 +746,7 @@ class MetadataEnricher {
     );
   }
 
-  /// Free Keyless Movie & TV Series APIs: TVMaze + Apple iTunes Search API
   static Future<EnrichedMetadata?> _fetchMovieOrShow(String query) async {
-    // 1. Try iTunes Movie Search first for feature films
     final itunesUri = Uri.https(
       'itunes.apple.com',
       '/search',
@@ -832,7 +781,6 @@ class MetadataEnricher {
       }
     }
 
-    // 2. Fallback to TVMaze SingleSearch for TV Shows / Series
     final tvUri = Uri.https(
       'api.tvmaze.com',
       '/singlesearch/shows',
@@ -864,7 +812,6 @@ class MetadataEnricher {
     return null;
   }
 
-  /// Free Keyless Book API: OpenLibrary Search API
   static Future<EnrichedMetadata?> _fetchBookOpenLibrary(String query) async {
     final uri = Uri.https(
       'openlibrary.org',
@@ -952,6 +899,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
   int _scanDoneCount = 0;
   int _scanTotalCount = 0;
   bool _permissionDenied = false;
+  String _statusBanner = '';
 
   final TextEditingController _searchCtrl = TextEditingController();
 
@@ -975,7 +923,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       _lang = savedLang;
       _cards = savedCards;
     });
-    // Automatically trigger lightweight delta scan on launch
     await _scanNewScreenshots();
   }
 
@@ -986,11 +933,16 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
     setState(() => _lang = next);
   }
 
+  Future<void> _resetAndRescan() async {
+    if (_isScanning) return;
+    await SnapVaultDb.clearProcessedAssets();
+    await _scanNewScreenshots();
+  }
+
   /// Strictly On-Demand Screenshot Scanner:
-  /// 1. Queries OS MediaStore for "Screenshots" album
-  /// 2. Filters only unprocessed assets (max 25 per run, throttled in batches of 5)
-  /// 3. Runs ML Kit Latin OCR + Isolate pHash/Classifier
-  /// 4. Merges burst shots taken within <= 5 seconds or Hamming distance <= 8
+  /// 1. Collects all non-empty Screenshot albums (or falls back to main album)
+  /// 2. Scans up to 25 unprocessed screenshots per tap in throttled batches of 5
+  /// 3. Uses `compute(processScreenshotInIsolate, map)` with primitive Map payload
   Future<void> _scanNewScreenshots() async {
     if (_isScanning) return;
 
@@ -1005,12 +957,12 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       _isScanning = true;
       _scanDoneCount = 0;
       _scanTotalCount = 0;
+      _statusBanner = _t.isTr ? 'Albümler kontrol ediliyor...' : 'Checking albums...';
     });
 
     final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin);
 
     try {
-      // Locate the "Screenshots" album (or fallback to Recent if device has no dedicated album)
       final paths = await PhotoManager.getAssetPathList(
         type: RequestType.image,
         filterOption: FilterOptionGroup(
@@ -1021,40 +973,95 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       );
 
       if (paths.isEmpty) {
-        if (mounted) setState(() => _isScanning = false);
+        if (mounted) {
+          setState(() {
+            _isScanning = false;
+            _statusBanner = _t.isTr ? 'Galeride fotoğraf bulunamadı.' : 'No images found in gallery.';
+          });
+        }
         return;
       }
 
-      AssetPathEntity targetAlbum = paths.first;
+      // Find all non-empty Screenshot albums (handles devices with multiple Screenshot folders)
+      final List<AssetPathEntity> screenshotAlbums = [];
+      int totalScreenshotCount = 0;
+
       for (final album in paths) {
+        final count = await album.assetCountAsync;
+        if (count <= 0) continue;
         final lowerName = album.name.toLowerCase();
         if (lowerName.contains('screenshot') ||
             lowerName.contains('ekran') ||
             lowerName.contains('screen')) {
-          targetAlbum = album;
-          break;
+          screenshotAlbums.add(album);
+          totalScreenshotCount += count;
         }
       }
 
-      // Inspect up to 35 most recent screenshots
-      final recentAssets = await targetAlbum.getAssetListPaged(page: 0, size: 35);
-      final processedIds = await SnapVaultDb.loadProcessedAssetIds();
+      // If no album is named "Screenshots", use the largest non-empty album (e.g. Recent/All)
+      if (screenshotAlbums.isEmpty) {
+        for (final album in paths) {
+          final count = await album.assetCountAsync;
+          if (count > 0) {
+            screenshotAlbums.add(album);
+            totalScreenshotCount = count;
+            break;
+          }
+        }
+      }
 
-      final newAssets = recentAssets
-          .where((a) => !processedIds.contains(a.id))
-          .take(20)
-          .toList();
-
-      if (newAssets.isEmpty) {
-        if (mounted) setState(() => _isScanning = false);
+      if (screenshotAlbums.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _isScanning = false;
+            _statusBanner = _t.isTr ? 'Taranacak görüntü bulunamadı.' : 'No screenshots found.';
+          });
+        }
         return;
       }
 
-      // Sort oldest-to-newest so burst-shot grouping merges sequentially
-      newAssets.sort((a, b) => a.createDateTime.compareTo(b.createDateTime));
+      final processedIds = await SnapVaultDb.loadProcessedAssetIds();
+      final List<AssetEntity> newAssets = [];
+
+      // Page through the screenshot album(s) until we gather 25 unprocessed screenshots
+      for (final album in screenshotAlbums) {
+        int page = 0;
+        const int pageSize = 50;
+        while (newAssets.length < 25 && page < 80) {
+          final pageAssets =
+              await album.getAssetListPaged(page: page, size: pageSize);
+          if (pageAssets.isEmpty) break;
+          for (final a in pageAssets) {
+            if (!processedIds.contains(a.id)) {
+              newAssets.add(a);
+              if (newAssets.length >= 25) break;
+            }
+          }
+          if (pageAssets.length < pageSize) break;
+          page++;
+        }
+        if (newAssets.length >= 25) break;
+      }
+
+      if (newAssets.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _isScanning = false;
+            _statusBanner = _t.isTr
+                ? 'Toplam $totalScreenshotCount görüntü incelendi (Yeni görüntü yok).'
+                : 'Checked $totalScreenshotCount images (No new items).';
+          });
+        }
+        return;
+      }
 
       if (mounted) {
-        setState(() => _scanTotalCount = newAssets.length);
+        setState(() {
+          _scanTotalCount = newAssets.length;
+          _statusBanner = _t.isTr
+              ? 'Bulunan: $totalScreenshotCount görüntü • 25 yeni görüntü işleniyor...'
+              : 'Found: $totalScreenshotCount images • Processing batch of ${newAssets.length}...';
+        });
       }
 
       final appSupportDir = await getApplicationSupportDirectory();
@@ -1066,137 +1073,154 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       int addedCardsCount = 0;
       int burstMergedCount = 0;
 
-      // Process in throttled batches of 5 to keep 120Hz UI responsive
       const int batchSize = 5;
       for (int i = 0; i < newAssets.length; i += batchSize) {
         final batch = newAssets.skip(i).take(batchSize).toList();
 
         for (final asset in batch) {
-          final file = await asset.file;
-          final thumbBytes = await asset.thumbnailDataWithSize(
-            const ThumbnailSize(480, 854),
-            quality: 85,
-          );
-
-          if (file == null || thumbBytes == null) {
-            await SnapVaultDb.markAssetProcessed(asset.id);
-            if (mounted) setState(() => _scanDoneCount++);
-            continue;
-          }
-
-          // 1. Run lightweight native ML Kit OCR (asynchronous platform channel)
-          final inputImage = InputImage.fromFilePath(file.path);
-          final recognized = await textRecognizer.processImage(inputImage);
-
-          final rawLines = <RawOcrLine>[];
-          for (final block in recognized.blocks) {
-            for (final line in block.lines) {
-              final rect = line.boundingBox;
-              rawLines.add(
-                RawOcrLine(
-                  text: line.text,
-                  left: rect.left,
-                  top: rect.top,
-                  right: rect.right,
-                  bottom: rect.bottom,
-                ),
-              );
-            }
-          }
-
-          // 2. Offload image decoding, pHash calculation, coordinate filtering,
-          //    and bilingual regex classification to a background Isolate
-          final safeId = asset.id.replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '_');
-          final targetThumbPath =
-              p.join(thumbDir.path, 'thumb_${safeId}_${asset.createDateSecond}.jpg');
-
-          final isolateInput = IsolateClassifyInput(
-            thumbBytes: thumbBytes,
-            targetThumbFilePath: targetThumbPath,
-            ocrLines: rawLines,
-          );
-
-          final result = await Isolate.run(
-            () => processScreenshotInIsolate(isolateInput),
-          );
-
-          final capturedMs = asset.createDateTime.millisecondsSinceEpoch;
-
-          // 3. Burst-Shot & Perceptual Duplicate Grouping Check:
-          //    If an existing card was captured within 5 seconds OR has a pHash
-          //    Hamming distance <= 8, merge this screenshot into that card!
-          VaultCard? burstTarget;
-          for (final existing in _cards) {
-            final timeDiffMs = (capturedMs - existing.capturedEpochMs).abs();
-            final pHashDist =
-                hammingDistanceHex(result.pHashHex, existing.pHashHex);
-            if (timeDiffMs <= 5000 || pHashDist <= 8) {
-              burstTarget = existing;
-              break;
-            }
-          }
-
-          if (burstTarget != null) {
-            final updatedGroup = <String>{
-              ...burstTarget.groupedAssetIds,
-              asset.id,
-            }.toList();
-            final updatedCard =
-                burstTarget.copyWith(groupedAssetIds: updatedGroup);
-            await SnapVaultDb.upsertCard(updatedCard);
-            await SnapVaultDb.markAssetProcessed(asset.id);
-
-            final idx = _cards.indexWhere((c) => c.id == burstTarget!.id);
-            if (idx != -1 && mounted) {
-              setState(() => _cards[idx] = updatedCard);
-            }
-            burstMergedCount++;
-          } else {
-            // Create a brand new VaultCard
-            final newCard = VaultCard(
-              id: 'card_${capturedMs}_$safeId',
-              primaryAssetId: asset.id,
-              groupedAssetIds: [asset.id],
-              localThumbPath: targetThumbPath,
-              category: result.category,
-              extractedTitle: result.extractedTitle,
-              cleanedOcrText: result.cleanedText,
-              actionPayload: result.actionPayload,
-              pHashHex: result.pHashHex,
-              capturedEpochMs: capturedMs,
-              isPurgedFromGallery: false,
+          try {
+            final file = await asset.file;
+            final thumbBytes = await asset.thumbnailDataWithSize(
+              const ThumbnailSize(480, 854),
+              quality: 85,
             );
 
-            await SnapVaultDb.upsertCard(newCard);
-            await SnapVaultDb.markAssetProcessed(asset.id);
-
-            if (mounted) {
-              setState(() {
-                _cards.insert(0, newCard);
-              });
+            if (file == null || thumbBytes == null) {
+              await SnapVaultDb.markAssetProcessed(asset.id);
+              if (mounted) setState(() => _scanDoneCount++);
+              continue;
             }
-            addedCardsCount++;
 
-            // Fire-and-forget non-blocking public API metadata enrichment
-            unawaited(_enrichCardInBackground(newCard));
+            // 1. Run on-device ML Kit OCR (wrapped in its own try/catch so even pure-image screenshots work)
+            final rawLines = <Map<String, dynamic>>[];
+            try {
+              final inputImage = InputImage.fromFilePath(file.path);
+              final recognized = await textRecognizer.processImage(inputImage);
+              for (final block in recognized.blocks) {
+                for (final line in block.lines) {
+                  final rect = line.boundingBox;
+                  rawLines.add({
+                    'text': line.text,
+                    'left': rect.left,
+                    'top': rect.top,
+                    'right': rect.right,
+                    'bottom': rect.bottom,
+                  });
+                }
+              }
+            } catch (_) {
+              // OCR failed on this image format; proceed with visual card creation
+            }
+
+            // 2. Run pHash & Bilingual Classifier inside background Isolate using `compute()`
+            final safeId = asset.id.replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '_');
+            final targetThumbPath = p.join(
+              thumbDir.path,
+              'thumb_${safeId}_${asset.createDateSecond}.jpg',
+            );
+
+            final isolatePayload = <String, dynamic>{
+              'thumbBytes': thumbBytes,
+              'targetThumbFilePath': targetThumbPath,
+              'origWidth': asset.width,
+              'origHeight': asset.height,
+              'ocrLines': rawLines,
+            };
+
+            final result =
+                await compute(processScreenshotInIsolate, isolatePayload);
+
+            final String pHashHex = result['pHashHex'] as String;
+            final String catName = result['category'] as String;
+            final VaultCategory category = VaultCategory.values.firstWhere(
+              (e) => e.name == catName,
+              orElse: () => VaultCategory.tempCode,
+            );
+            final String extractedTitle = result['extractedTitle'] as String;
+            final String cleanedText = result['cleanedText'] as String;
+            final String? actionPayload = result['actionPayload'] as String?;
+
+            final capturedMs = asset.createDateTime.millisecondsSinceEpoch;
+
+            // 3. Smart Burst-Shot Grouping:
+            //    Merge only if BOTH captured within 4 seconds AND perceptually very similar (Hamming <= 6)
+            VaultCard? burstTarget;
+            for (final existing in _cards) {
+              final timeDiffMs = (capturedMs - existing.capturedEpochMs).abs();
+              final pHashDist = hammingDistanceHex(pHashHex, existing.pHashHex);
+              if (existing.category == category &&
+                  timeDiffMs <= 4000 &&
+                  pHashDist <= 6) {
+                burstTarget = existing;
+                break;
+              }
+            }
+
+            if (burstTarget != null) {
+              final updatedGroup = <String>{
+                ...burstTarget.groupedAssetIds,
+                asset.id,
+              }.toList();
+              final updatedCard =
+                  burstTarget.copyWith(groupedAssetIds: updatedGroup);
+              await SnapVaultDb.upsertCard(updatedCard);
+              await SnapVaultDb.markAssetProcessed(asset.id);
+
+              final idx = _cards.indexWhere((c) => c.id == burstTarget!.id);
+              if (idx != -1 && mounted) {
+                setState(() => _cards[idx] = updatedCard);
+              }
+              burstMergedCount++;
+            } else {
+              final newCard = VaultCard(
+                id: 'card_${capturedMs}_$safeId',
+                primaryAssetId: asset.id,
+                groupedAssetIds: [asset.id],
+                localThumbPath: targetThumbPath,
+                category: category,
+                extractedTitle: extractedTitle,
+                cleanedOcrText: cleanedText,
+                actionPayload: actionPayload,
+                pHashHex: pHashHex,
+                capturedEpochMs: capturedMs,
+                isPurgedFromGallery: false,
+              );
+
+              await SnapVaultDb.upsertCard(newCard);
+              await SnapVaultDb.markAssetProcessed(asset.id);
+
+              if (mounted) {
+                setState(() {
+                  _cards.add(newCard);
+                  _cards.sort(
+                      (a, b) => b.capturedEpochMs.compareTo(a.capturedEpochMs));
+                });
+              }
+              addedCardsCount++;
+
+              unawaited(_enrichCardInBackground(newCard));
+            }
+          } catch (err) {
+            debugPrint('Asset scan error: $err');
           }
 
           if (mounted) {
             setState(() => _scanDoneCount++);
           }
-          // Yield a frame between screenshots to guarantee 0 UI jank
           await Future.delayed(const Duration(milliseconds: 16));
         }
       }
 
-      if (mounted && (addedCardsCount > 0 || burstMergedCount > 0)) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(_t.scanCompleteMsg(addedCardsCount, burstMergedCount)),
-            behavior: SnackBarBehavior.floating,
-            backgroundColor: const Color(0xFF1E293B),
-          ),
-        );
+      if (mounted) {
+        setState(() {
+          _statusBanner = _t.scanCompleteMsg(addedCardsCount, burstMergedCount);
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _statusBanner = 'Hata / Error: $e';
+        });
       }
     } finally {
       await textRecognizer.close();
@@ -1228,8 +1252,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
     });
   }
 
-  /// Deletes the raw screenshots from the phone's main gallery using the OS native prompt
-  /// while keeping the organized card & cached thumbnail inside SnapVault!
   Future<void> _purgeCardScreenshotsFromGallery(VaultCard card) async {
     if (card.isPurgedFromGallery || card.groupedAssetIds.isEmpty) return;
     final deletedIds =
@@ -1252,7 +1274,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
     }
   }
 
-  /// Bulk Gallery Clean-up: Deletes all unpurged raw screenshots from the phone's gallery in one tap
   Future<void> _purgeAllProcessedFromGallery() async {
     final unpurgedCards =
         _cards.where((c) => !c.isPurgedFromGallery).toList();
@@ -1357,9 +1378,8 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           ],
         ),
         actions: [
-          // Bilingual Language Toggle (TR / EN)
           Padding(
-            padding: const EdgeInsets.only(right: 6),
+            padding: const EdgeInsets.only(right: 4),
             child: TextButton.icon(
               onPressed: _toggleLanguage,
               style: TextButton.styleFrom(
@@ -1379,46 +1399,52 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
               ),
             ),
           ),
-          // Scan button
           IconButton(
-            tooltip: _t.scanNow,
-            onPressed: _isScanning ? null : _scanNewScreenshots,
-            icon: _isScanning
-                ? const SizedBox(
-                    width: 18,
-                    height: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.bolt_rounded, color: Color(0xFF10B981)),
+            tooltip: _t.rescanAll,
+            onPressed: _isScanning ? null : _resetAndRescan,
+            icon: const Icon(Icons.refresh_rounded, color: Colors.white70),
           ),
         ],
       ),
       body: Column(
         children: [
-          // 1. Progress Indicator when scanning
-          if (_isScanning)
+          // Live Status & Progress Bar
+          if (_isScanning || _statusBanner.isNotEmpty)
             Container(
+              width: double.infinity,
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               color: const Color(0xFF151923),
               child: Row(
                 children: [
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 12),
+                  if (_isScanning) ...[
+                    const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    const SizedBox(width: 10),
+                  ] else ...[
+                    const Icon(
+                      Icons.info_outline_rounded,
+                      size: 15,
+                      color: Color(0xFF10B981),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
                   Expanded(
                     child: Text(
-                      '${_t.scanning} ($_scanDoneCount / $_scanTotalCount)',
-                      style: const TextStyle(fontSize: 12, color: Colors.white70),
+                      _isScanning
+                          ? '${_t.scanning} ($_scanDoneCount / $_scanTotalCount) — $_statusBanner'
+                          : _statusBanner,
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.white70),
                     ),
                   ),
                 ],
               ),
             ),
 
-          // 2. Instant Offline Search Bar + Bulk Gallery Clean-up Button
+          // Instant Offline Search Bar + Bulk Gallery Clean-up Button
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 6),
             child: Row(
@@ -1482,7 +1508,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
             ),
           ),
 
-          // 3. Category Filter Chips
+          // Category Filter Chips
           SizedBox(
             height: 44,
             child: ListView(
@@ -1521,7 +1547,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
           const SizedBox(height: 6),
 
-          // 4. Main Rich Media Card Grid
+          // Main Rich Media Card Grid
           Expanded(
             child: _permissionDenied
                 ? _buildPermissionDeniedView()
@@ -1884,14 +1910,12 @@ class _RichMediaCardWidget extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Poster / Cached 400px Thumbnail Header
             Expanded(
               flex: 5,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
                   _buildCardImage(card),
-                  // Gradient overlay
                   const DecoratedBox(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
@@ -1905,7 +1929,6 @@ class _RichMediaCardWidget extends StatelessWidget {
                       ),
                     ),
                   ),
-                  // Category Badge
                   Positioned(
                     top: 8,
                     left: 8,
@@ -1928,7 +1951,6 @@ class _RichMediaCardWidget extends StatelessWidget {
                       ),
                     ),
                   ),
-                  // Rating or Burst Shot Counter
                   if (card.apiRating != null)
                     Positioned(
                       top: 8,
@@ -1988,8 +2010,6 @@ class _RichMediaCardWidget extends StatelessWidget {
                 ],
               ),
             ),
-
-            // Metadata & One-Tap Action Footer
             Expanded(
               flex: 4,
               child: Padding(
@@ -2029,7 +2049,6 @@ class _RichMediaCardWidget extends StatelessWidget {
                         ),
                       ),
                     const Spacer(),
-                    // Action Row: Copy Payload (if any) + Gallery Purge / Delete
                     Row(
                       children: [
                         if (card.actionPayload != null &&
@@ -2130,8 +2149,6 @@ class _RichMediaCardWidget extends StatelessWidget {
   }
 }
 
-/// Renders either the enriched API poster or the locally cached 400px screenshot
-/// using `ResizeImage(cacheWidth: 400)` so RAM consumption never spikes.
 Widget _buildCardImage(VaultCard card) {
   if (card.apiPosterUrl != null && card.apiPosterUrl!.startsWith('http')) {
     return Image(
@@ -2168,14 +2185,14 @@ Widget _buildLocalThumbImage(String path) {
 Color _categoryColor(VaultCategory cat) {
   switch (cat) {
     case VaultCategory.movieSeries:
-      return const Color(0xFF6366F1); // Indigo
+      return const Color(0xFF6366F1);
     case VaultCategory.anime:
-      return const Color(0xFFEC4899); // Pink
+      return const Color(0xFFEC4899);
     case VaultCategory.book:
-      return const Color(0xFFF59E0B); // Amber
+      return const Color(0xFFF59E0B);
     case VaultCategory.shopping:
-      return const Color(0xFF10B981); // Emerald
+      return const Color(0xFF10B981);
     case VaultCategory.tempCode:
-      return const Color(0xFF06B6D4); // Cyan
+      return const Color(0xFF06B6D4);
   }
 }
