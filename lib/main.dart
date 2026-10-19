@@ -3,12 +3,13 @@
 // Architecture:
 //   1. Strict On-Demand Execution (Zero background services, zero battery drain)
 //   2. Android 13/14/15/16 Image-Only Permission Fix (RequestType.image +
-//      setIgnorePermissionCheck) so gallery access NEVER fails without video perm
-//   3. Full Gallery Support (Camera photos, Movie Posters, QR/Codes, Books,
-//      Shopping Tags, and Screenshots) + Interactive Album Selector
-//   4. Isolate-Offloaded Perceptual Hashing (64-bit dHash) via compute()
-//   5. Keyless Public API Enrichment (Jikan / TVMaze / iTunes / OpenLibrary)
-//   6. Native OS Gallery Purge (PhotoManager.editor.deleteWithIds)
+//      setIgnorePermissionCheck)
+//   3. Strict Trash-Photo Filter (Skips wallpapers, landscapes, selfies, and
+//      casual chat screenshots before image decoding for ultra-fast scanning)
+//   4. User-Configurable Scan Batch Limit (Default 25, selectable up to 1000
+//      with instant Stop/Cancel & One-Tap Full App Data Reset)
+//   5. Transparent Source-to-Match UI (Shows user's original screenshot, exact
+//      OCR trigger text, and Picture-in-Picture matched API poster side-by-side)
 // ============================================================================
 
 import 'dart:async';
@@ -44,46 +45,62 @@ class L10n {
   bool get isTr => lang == AppLang.tr;
 
   String get appTitle => 'SnapVault';
-  String get subtitle => isTr
-      ? 'Tüm Galeri & Ekran Görüntüsü Akıllı Kasası'
-      : 'Full Gallery & Screenshot Smart Vault';
+  String get subtitle =>
+      isTr ? 'Akıllı Galeri & Ekran Görüntüsü Kasası' : 'Smart Gallery & Screenshot Vault';
   String get searchHint => isTr
-      ? 'Film, anime, kitap, ürün, afiş veya IBAN ara...'
-      : 'Search movie, anime, book, poster, product or IBAN...';
-  String get scanNow =>
-      isTr ? 'Sonraki 25 Fotoğrafı Tara' : 'Scan Next 25 Photos';
-  String get rescanAll => isTr ? 'Baştan Tara' : 'Rescan All';
-  String get scanning => isTr ? 'Taranıyor...' : 'Scanning...';
+      ? 'Film, anime, kitap, ürün, kod veya okunan metin ara...'
+      : 'Search movie, anime, book, product, code or OCR text...';
+  String scanNextN(int n) =>
+      isTr ? 'Sonraki $n Fotoğrafı Tara' : 'Scan Next $n Photos';
+  String get stopScan => isTr ? 'Taramayı Durdur' : 'Stop Scan';
+  String get resetVaultTitle =>
+      isTr ? 'Uygulama Verilerini Sıfırla' : 'Reset App Data';
+  String get resetVaultConfirm => isTr
+      ? 'Bulunan tüm kartlar ve tarama geçmişi sıfırlanacak (Telefon galerinizdeki fotoğraflara dokunulmaz). Devam edilsin mi?'
+      : 'All saved cards and scan history will be cleared (Your phone gallery photos will NOT be deleted). Continue?';
+  String get cancel => isTr ? 'Vazgeç' : 'Cancel';
+  String get resetNow => isTr ? 'Verileri Sıfırla' : 'Reset All Data';
+  String get resetDoneToast => isTr
+      ? 'Tüm uygulama verileri ve tarama geçmişi sıfırlandı.'
+      : 'All app data and scan history have been reset.';
+  String get scanLimitLabel => isTr ? 'Tarama Adedi:' : 'Scan Limit:';
   String get allGalleryAlbum => isTr ? 'Tüm Galeri' : 'All Gallery';
   String get catAll => isTr ? 'Tümü' : 'All';
   String get catMovie => isTr ? 'Film / Dizi' : 'Movie / Series';
   String get catAnime => isTr ? 'Anime' : 'Anime';
   String get catBook => isTr ? 'Kitap' : 'Book';
   String get catShopping => isTr ? 'Alışveriş' : 'Shopping';
-  String get catTemp => isTr ? 'IBAN / Kod / Not' : 'IBAN / Code / Note';
+  String get catTemp => isTr ? 'IBAN / Kod / Link' : 'IBAN / Code / Link';
 
   String get copyPayload => isTr ? 'Kopyala' : 'Copy';
   String get copiedToast =>
       isTr ? 'Panoya kopyalandı!' : 'Copied to clipboard!';
   String get deleteFromGallery =>
       isTr ? 'Orijinali Galeriden Sil' : 'Delete Original from Gallery';
-  String get deleteCard => isTr ? 'Kartı Sil' : 'Delete Card';
+  String get deleteCard => isTr ? 'Kartı Kaldır' : 'Remove Card';
   String get purgedBadge =>
-      isTr ? 'Galeriden Temizlendi' : 'Purged from Gallery';
+      isTr ? 'Galeriden Silindi' : 'Purged from Gallery';
   String get burstBadge => isTr ? 'Seri' : 'Burst';
+  String get readFromPhotoLabel =>
+      isTr ? 'Fotoğraftan Okunan:' : 'Read from Photo:';
+  String get matchedResultLabel =>
+      isTr ? 'Eşleşen Sonuç:' : 'Matched Result:';
   String get emptyStateTitle => isTr
-      ? 'Galeriniz Taranmaya Hazır'
-      : 'Your Gallery is Ready to Scan';
+      ? 'Kasanız Temiz ve Taranmaya Hazır'
+      : 'Your Vault is Clean & Ready';
   String get emptyStateSub => isTr
-      ? 'SnapVault sadece ekran görüntülerini değil; kamerayla çektiğiniz film afişlerini, kitap kapaklarını, fiyat etiketlerini, QR/IBAN ve notları da tanır.\n\nBaşlamak için aşağıdaki "Sonraki 25 Fotoğrafı Tara" butonuna dokunun.'
-      : 'SnapVault recognizes camera photos (movie posters, book covers, price tags, QR/IBANs) as well as screenshots.\n\nTap "Scan Next 25 Photos" below to start.';
+      ? 'Manzara, duvar kağıdı ve sıradan sohbet fotoğrafları otomatik atlanır.\nSadece Film/Dizi, Anime, Kitap, Alışveriş/Fiyat ve IBAN/Kod/Link içeren fotoğraflar karta dönüştürülür.\n\nÜstten tarama adedini (25 - 1000) seçip taramayı başlatabilirsiniz.'
+      : 'Wallpapers, landscapes, and casual chats are automatically skipped.\nOnly Movies/Series, Anime, Books, Shopping/Prices, and IBAN/Codes/Links are turned into cards.\n\nPick your scan batch size (25 - 1000) and start scanning.';
   String get permDenied => isTr
-      ? 'Galeri erişim izni gerekli. Lütfen aşağıdaki butondan uygulama ayarlarını açıp Fotoğraflar ve Videolar iznini verin.'
+      ? 'Galeri erişim izni gerekli. Lütfen aşağıdaki butondan uygulama ayarlarını açıp Fotoğraflar iznini verin.'
       : 'Gallery permission required. Please tap below to grant Photos permission in Settings.';
-  String get openSettings => isTr ? 'İzin Ayarlarını Aç' : 'Open Permission Settings';
-  String scanCompleteMsg(int added, int grouped) => isTr
-      ? '$added yeni kart eklendi ($grouped seri çekim birleştirildi).'
-      : '$added new cards added ($grouped burst shots merged).';
+  String get openSettings =>
+      isTr ? 'İzin Ayarlarını Aç' : 'Open Permission Settings';
+
+  String scanCompleteMsg(int scanned, int added, int skipped) => isTr
+      ? '$scanned foto incelendi: $added anlamlı kart bulundu, $skipped alakasız görsel atlandı.'
+      : 'Checked $scanned photos: $added cards created, $skipped irrelevant images skipped.';
+
   String purgeSuccessMsg(int count) => isTr
       ? '$count orijinal fotoğraf telefon galerisinden silindi!'
       : '$count original photos deleted from device gallery!';
@@ -152,10 +169,10 @@ class VaultCard {
     required this.isPurgedFromGallery,
   });
 
+  bool get hasApiMatch => apiTitle != null && apiTitle!.trim().isNotEmpty;
+
   String get displayTitle =>
-      (apiTitle != null && apiTitle!.trim().isNotEmpty)
-          ? apiTitle!
-          : extractedTitle;
+      hasApiMatch ? apiTitle! : extractedTitle;
 
   VaultCard copyWith({
     List<String>? groupedAssetIds,
@@ -212,7 +229,8 @@ class VaultCard {
       orElse: () => VaultCategory.tempCode,
     );
     final decodedGroup =
-        (jsonDecode(map['grouped_asset_ids'] as String? ?? '[]') as List<dynamic>)
+        (jsonDecode(map['grouped_asset_ids'] as String? ?? '[]')
+                as List<dynamic>)
             .map((e) => e.toString())
             .toList();
 
@@ -315,9 +333,17 @@ class SnapVaultDb {
     );
   }
 
-  static Future<void> clearProcessedAssets() async {
+  static Future<void> resetAllVaultData() async {
     final db = await instance;
+    await db.delete('vault_cards');
     await db.delete('processed_assets');
+    try {
+      final appSupportDir = await getApplicationSupportDirectory();
+      final thumbDir = Directory(p.join(appSupportDir.path, 'vault_thumbs'));
+      if (thumbDir.existsSync()) {
+        await thumbDir.delete(recursive: true);
+      }
+    } catch (_) {}
   }
 
   static Future<void> upsertCard(VaultCard card) async {
@@ -353,10 +379,30 @@ class SnapVaultDb {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
   }
+
+  static Future<int> loadScanLimit() async {
+    final db = await instance;
+    final rows = await db.query(
+      'app_Config',
+      where: 'cfg_key = ?',
+      whereArgs: ['scan_limit'],
+    );
+    if (rows.isEmpty) return 25;
+    return int.tryParse(rows.first['cfg_val'] as String? ?? '25') ?? 25;
+  }
+
+  static Future<void> saveScanLimit(int limit) async {
+    final db = await instance;
+    await db.insert(
+      'app_Config',
+      {'cfg_key': 'scan_limit', 'cfg_val': '$limit'},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
 }
 
 // ============================================================================
-// 4. ISOLATE-SAFE PERCEPTUAL HASHING & BILINGUAL CLASSIFICATION ENGINE
+// 4. ISOLATE-SAFE STRICT CLASSIFIER & PERCEPTUAL HASHING ENGINE
 // ============================================================================
 
 Future<Map<String, dynamic>> processScreenshotInIsolate(
@@ -368,6 +414,199 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
   final int origH = (payload['origHeight'] as int?) ?? 2400;
   final List<dynamic> rawOcrList = payload['ocrLines'] as List<dynamic>;
 
+  // STEP 1: Fast Coordinate & Social Clutter Filtering BEFORE decoding image
+  if (rawOcrList.isEmpty) {
+    return {'skip': true};
+  }
+
+  final imgW = origW > 0 ? origW : 1080;
+  final imgH = origH > 0 ? origH : 2400;
+  final bool isPortraitScreen = imgH > imgW * 1.5;
+
+  final List<Map<String, dynamic>> validLines = [];
+  for (final item in rawOcrList) {
+    final map = item as Map<String, dynamic>;
+    final String text = (map['text'] as String?) ?? '';
+    final double left = (map['left'] as num?)?.toDouble() ?? 0.0;
+    final double top = (map['top'] as num?)?.toDouble() ?? 0.0;
+    final double right = (map['right'] as num?)?.toDouble() ?? 0.0;
+    final double bottom = (map['bottom'] as num?)?.toDouble() ?? 0.0;
+
+    if (isPortraitScreen) {
+      final centerY = (top + bottom) / 2.0;
+      final centerX = (left + right) / 2.0;
+      final normY = centerY / imgH;
+      final normX = centerX / imgW;
+
+      // Ignore top 5% status bar and bottom 5% gesture bar on phone screenshots
+      if (normY < 0.05 || normY > 0.95) continue;
+      // Ignore right-edge social media action buttons (Reels/TikTok/Shorts)
+      if (normX > 0.88 && normY > 0.45) continue;
+    }
+
+    final cleaned = _stripBilingualSocialClutter(text);
+    if (cleaned.length >= 2) {
+      validLines.add({
+        'text': cleaned,
+        'height': (bottom - top).abs(),
+      });
+    }
+  }
+
+  if (validLines.isEmpty) {
+    return {'skip': true};
+  }
+
+  final fullCleanText =
+      validLines.map((l) => l['text'] as String).join('\n');
+  final lowerText = fullCleanText.toLowerCase();
+
+  // Reject pure chat / DM / GitHub / system UI screenshots unless they contain an IBAN or price
+  final chatOrSystemNoise = RegExp(
+    r'\b(senin notuna yanıt verdi|bir fotoğraf gönderdi|bir video gönderdi|sesli mesaj|mesaj yaz|çevrimiçi|son görülme|replied to your note|sent a photo|type a message|workflow run|build snapvault|scraper cron job|unread repository|commit by)\b',
+    caseSensitive: false,
+  );
+
+  // 1. Check IBAN (Turkish & International)
+  final ibanRegex = RegExp(
+    r'\bTR\s*\d{2}\s*(?:\d{4}\s*){5}\d{2}\b',
+    caseSensitive: false,
+  );
+  final ibanMatch = ibanRegex.firstMatch(fullCleanText);
+
+  if (chatOrSystemNoise.hasMatch(lowerText) && ibanMatch == null) {
+    return {'skip': true};
+  }
+
+  String? matchedCategory;
+  String? extractedTitle;
+  String? actionPayload;
+
+  if (ibanMatch != null) {
+    final rawIban =
+        ibanMatch.group(0)!.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+    matchedCategory = VaultCategory.tempCode.name;
+    extractedTitle =
+        'IBAN (${rawIban.substring(0, 6)}...${rawIban.substring(rawIban.length - 4)})';
+    actionPayload = rawIban;
+  }
+
+  // 2. Check Explicit OTP / Verification / Cargo Code / Wi-Fi / URL / QR Link
+  if (matchedCategory == null) {
+    final urlRegex = RegExp(
+      r'(https?:\/\/[^\s]+)|(www\.[a-zA-Z0-9\-]+\.[a-zA-Z]{2,}[^\s]*)',
+      caseSensitive: false,
+    );
+    final urlMatch = urlRegex.firstMatch(fullCleanText);
+
+    final otpKeywords = RegExp(
+      r'\b(doğrulama kodu|onay kodu|tek kullanımlık şifre|kargo takip|takip numarası|iade kodu|rezervasyon kodu|pnr\s*kodu|kupon kodu|promosyon kodu|verification code|security code|otp\s*code|passcode|tracking number|wifi\s*şifre|wi-fi\s*password|otopark)\b',
+      caseSensitive: false,
+    );
+
+    if (urlMatch != null) {
+      final rawUrl = urlMatch.group(0)!.trim();
+      matchedCategory = VaultCategory.tempCode.name;
+      extractedTitle = rawUrl;
+      actionPayload = rawUrl;
+    } else if (otpKeywords.hasMatch(lowerText)) {
+      final codeMatch =
+          RegExp(r'\b[A-Z0-9]{4,14}\b').firstMatch(fullCleanText);
+      final title = _pickProminentTitle(validLines);
+      final payloadStr = codeMatch?.group(0) ?? title;
+      if (payloadStr.length >= 3) {
+        matchedCategory = VaultCategory.tempCode.name;
+        extractedTitle = title.isNotEmpty ? title : payloadStr;
+        actionPayload = payloadStr;
+      }
+    }
+  }
+
+  // 3. Check Shopping / Product / Price Tag
+  if (matchedCategory == null) {
+    final priceRegex = RegExp(
+      r'(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?\s*(?:TL|₺|TRY|USD|\$|EUR|€))|(?:(?:TL|₺|\$|€)\s*\d{1,3}(?:[.,]\d{3})*)',
+      caseSensitive: false,
+    );
+    final shoppingKeywords = RegExp(
+      r'\b(sepete ekle|hemen al|ücretsiz kargo|kargo bedava|trendyol|hepsiburada|amazon\.com|n11\.com|akakçe|cimri|add to cart|buy now|free shipping|sipariş özeti|ürün özellikleri)\b',
+      caseSensitive: false,
+    );
+    final priceMatch = priceRegex.firstMatch(fullCleanText);
+    if (shoppingKeywords.hasMatch(lowerText) || priceMatch != null) {
+      final detectedPrice = priceMatch?.group(0)?.trim();
+      final title = _pickProminentTitle(validLines, ignoreRegex: priceRegex);
+      if (title.length >= 3) {
+        matchedCategory = VaultCategory.shopping.name;
+        extractedTitle = title;
+        actionPayload = detectedPrice;
+      }
+    }
+  }
+
+  // 4. Check Anime / Manga / Webtoon
+  if (matchedCategory == null) {
+    final animeKeywords = RegExp(
+      r'\b(myanimelist|crunchyroll|anizle|türkanime|turkanime|animecix|openani|shonen|shounen|seinen|isekai|fansub|webtoon|manhwa|manga\s*oku|anime\s*izle)\b',
+      caseSensitive: false,
+    );
+    final famousAnimeCue = RegExp(
+      r'\b(naruto|one piece|bleach|attack on titan|shingeki no kyojin|jujutsu kaisen|demon slayer|kimetsu no yaiba|death note|fullmetal alchemist|hunter x hunter|chainsaw man|frieren|solo leveling|steins;gate|evangelion|gintama|berserk|vinland saga|haikyuu|blue lock|my hero academia|boku no hero|dandadan|one punch man|dragon ball|uzumaki|uchiha|gojo satoru|luffy)\b',
+      caseSensitive: false,
+    );
+    if (animeKeywords.hasMatch(lowerText) ||
+        famousAnimeCue.hasMatch(lowerText)) {
+      final title = _pickProminentTitle(validLines);
+      if (_isValidMediaTitle(title)) {
+        matchedCategory = VaultCategory.anime.name;
+        extractedTitle = title;
+      }
+    }
+  }
+
+  // 5. Check Book / Novel (Strictly excluding school/club/announcement posters)
+  if (matchedCategory == null) {
+    final announcementExclude = RegExp(
+      r'\b(öğrenci kulübü|başvuru|başvurusu|duyuru|üniversitesi|fakültesi|rektörlük|sınav|kongre|sempozyum|etkinlik takvimi)\b',
+      caseSensitive: false,
+    );
+    final bookKeywords = RegExp(
+      r'\b(isbn|yayınevi|yayınları|kitabevi|çevirmen|çeviren|sayfa\s*\d+|goodreads|1000kitap|kitapyurdu|bkmkitap|idefix|dr\.com\.tr|chapter\s*\d+|published by|paperback|hardcover|bestseller|romanı|kitabı)\b',
+      caseSensitive: false,
+    );
+    if (!announcementExclude.hasMatch(lowerText) &&
+        bookKeywords.hasMatch(lowerText)) {
+      final title = _pickProminentTitle(validLines);
+      if (_isValidMediaTitle(title)) {
+        matchedCategory = VaultCategory.book.name;
+        extractedTitle = title;
+      }
+    }
+  }
+
+  // 6. Check Movie / TV Series (Requires explicit streaming/cinema/episode cues)
+  if (matchedCategory == null) {
+    final movieKeywords = RegExp(
+      r'\b(imdb|netflix|disney\+|prime video|blutv|mubi|exxen|gain|hbo max|apple tv\+|letterboxd|rottentomatoes|beyazperde|sinemalar|yönetmen|fragman|sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|s\d{1,2}e\d{1,2}|directed by|starring|original series|altyazılı|türkçe dublaj|vizyon tarihi|imax)\b',
+      caseSensitive: false,
+    );
+    if (movieKeywords.hasMatch(lowerText)) {
+      final title = _pickProminentTitle(validLines);
+      if (_isValidMediaTitle(title)) {
+        matchedCategory = VaultCategory.movieSeries.name;
+        extractedTitle = title;
+      }
+    }
+  }
+
+  // STRICT FILTER: If the photo did not match any real category, SKIP IT!
+  if (matchedCategory == null ||
+      extractedTitle == null ||
+      extractedTitle.trim().isEmpty) {
+    return {'skip': true};
+  }
+
+  // STEP 2: Only decode thumbnail & compute 64-bit dHash for ACCEPTED cards!
   String pHashHex = '0000000000000000';
   try {
     final decoded = img.decodeImage(thumbBytes);
@@ -407,195 +646,32 @@ Future<Map<String, dynamic>> processScreenshotInIsolate(
     await File(targetThumbFilePath).writeAsBytes(thumbBytes, flush: false);
   }
 
-  final imgW = origW > 0 ? origW : 1080;
-  final imgH = origH > 0 ? origH : 2400;
-  final bool isPortraitScreen = imgH > imgW * 1.5;
-
-  final List<Map<String, dynamic>> validLines = [];
-  for (final item in rawOcrList) {
-    final map = item as Map<String, dynamic>;
-    final String text = (map['text'] as String?) ?? '';
-    final double left = (map['left'] as num?)?.toDouble() ?? 0.0;
-    final double top = (map['top'] as num?)?.toDouble() ?? 0.0;
-    final double right = (map['right'] as num?)?.toDouble() ?? 0.0;
-    final double bottom = (map['bottom'] as num?)?.toDouble() ?? 0.0;
-
-    if (isPortraitScreen) {
-      final centerY = (top + bottom) / 2.0;
-      final centerX = (left + right) / 2.0;
-      final normY = centerY / imgH;
-      final normX = centerX / imgW;
-
-      if (normY < 0.05 || normY > 0.95) continue;
-      if (normX > 0.88 && normY > 0.45) continue;
-    }
-
-    final cleaned = _stripBilingualSocialClutter(text);
-    if (cleaned.length >= 2) {
-      validLines.add({
-        'text': cleaned,
-        'height': (bottom - top).abs(),
-      });
-    }
-  }
-
-  if (validLines.isEmpty && rawOcrList.isNotEmpty) {
-    for (final item in rawOcrList) {
-      final map = item as Map<String, dynamic>;
-      final cleaned =
-          _stripBilingualSocialClutter((map['text'] as String?) ?? '');
-      if (cleaned.length >= 2) {
-        validLines.add({
-          'text': cleaned,
-          'height': ((map['bottom'] as num? ?? 20) - (map['top'] as num? ?? 0))
-              .abs()
-              .toDouble(),
-        });
-      }
-    }
-  }
-
-  final fullCleanText =
-      validLines.map((l) => l['text'] as String).join('\n');
-  final lowerText = fullCleanText.toLowerCase();
-
-  // 1. Check IBAN / Temporary Code / Parking / Wi-Fi / URL / QR Text
-  final ibanRegex = RegExp(
-    r'\bTR\s*\d{2}\s*(?:\d{4}\s*){5}\d{2}\b',
-    caseSensitive: false,
-  );
-  final ibanMatch = ibanRegex.firstMatch(fullCleanText);
-  if (ibanMatch != null) {
-    final rawIban =
-        ibanMatch.group(0)!.replaceAll(RegExp(r'\s+'), '').toUpperCase();
-    return {
-      'pHashHex': pHashHex,
-      'category': VaultCategory.tempCode.name,
-      'extractedTitle':
-          'IBAN (${rawIban.substring(0, 6)}...${rawIban.substring(rawIban.length - 4)})',
-      'cleanedText': fullCleanText,
-      'actionPayload': rawIban,
-    };
-  }
-
-  final urlRegex = RegExp(
-    r'(https?:\/\/[^\s]+)|(www\.[^\s]+)',
-    caseSensitive: false,
-  );
-  final urlMatch = urlRegex.firstMatch(fullCleanText);
-
-  final otpKeywords = RegExp(
-    r'\b(doğrulama kodu|onay kodu|şifre|kargo takip|iade kodu|verification code|security code|otp|passcode|tracking number|iban|wifi|wi-fi|otopark|kolon|kat\s*[-:]?\s*\d)\b',
-    caseSensitive: false,
-  );
-  if (otpKeywords.hasMatch(lowerText) || urlMatch != null) {
-    final codeMatch = RegExp(r'\b[A-Z0-9]{4,14}\b').firstMatch(fullCleanText);
-    final payloadStr = urlMatch?.group(0) ??
-        codeMatch?.group(0) ??
-        _pickProminentTitle(validLines);
-    return {
-      'pHashHex': pHashHex,
-      'category': VaultCategory.tempCode.name,
-      'extractedTitle':
-          payloadStr.isNotEmpty ? payloadStr : 'Kod / Bağlantı Kaydı',
-      'cleanedText': fullCleanText,
-      'actionPayload': payloadStr,
-    };
-  }
-
-  // 2. Check Shopping / Product / Receipt / Price Tag
-  final priceRegex = RegExp(
-    r'(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?\s*(?:TL|₺|TRY|USD|\$|EUR|€))|(?:(?:TL|₺|\$|€)\s*\d{1,3}(?:[.,]\d{3})*)',
-    caseSensitive: false,
-  );
-  final shoppingKeywords = RegExp(
-    r'\b(sepete ekle|hemen al|ücretsiz kargo|indirim|beden|stokta|trendyol|hepsiburada|amazon|n11|zara|bershka|add to cart|buy now|free shipping|in stock|checkout|discount|fiyat|toplam|kdv|fiş|fatura)\b',
-    caseSensitive: false,
-  );
-  final priceMatch = priceRegex.firstMatch(fullCleanText);
-  if (shoppingKeywords.hasMatch(lowerText) || priceMatch != null) {
-    final detectedPrice = priceMatch?.group(0)?.trim();
-    final title = _pickProminentTitle(validLines, ignoreRegex: priceRegex);
-    return {
-      'pHashHex': pHashHex,
-      'category': VaultCategory.shopping.name,
-      'extractedTitle': title.isNotEmpty ? title : 'Ürün / Fiyat Etiketi',
-      'cleanedText': fullCleanText,
-      'actionPayload': detectedPrice,
-    };
-  }
-
-  // 3. Check Anime / Manga
-  final animeKeywords = RegExp(
-    r'\b(anime|manga|myanimelist|crunchyroll|anizle|türkanime|turkanime|shonen|shounen|seinen|isekai|ova|subbed|dubbed|altyazılı|fansub|webtoon|manhwa)\b',
-    caseSensitive: false,
-  );
-  final japaneseCue = RegExp(
-    r'\b(naruto|one piece|bleach|attack on titan|shingeki|jujutsu kaisen|demon slayer|kimetsu|death note|fullmetal|hunter x hunter|chainsaw man|frieren|solo leveling|steins|evangelion|gintama|berserk|vinland|haikyuu|blue lock|boku no hero|my hero academia|dan da dan|dandadan|one punch|dragon ball|uzumaki|uchiha|gojo|sukuna|luffy|zoro)\b',
-    caseSensitive: false,
-  );
-  if (japaneseCue.hasMatch(lowerText) || animeKeywords.hasMatch(lowerText)) {
-    final title = _pickProminentTitle(validLines);
-    return {
-      'pHashHex': pHashHex,
-      'category': VaultCategory.anime.name,
-      'extractedTitle': title,
-      'cleanedText': fullCleanText,
-      'actionPayload': null,
-    };
-  }
-
-  // 4. Check Book / Book Cover / Page
-  final bookKeywords = RegExp(
-    r'\b(isbn|kitap|roman|yazar|yayınları|yayınevi|çevirmen|sayfa\s*\d+|goodreads|1000kitap|kitapyurdu|chapter\s*\d+|page\s*\d+|author|published by|publisher|novel|bestseller|edebiyat)\b',
-    caseSensitive: false,
-  );
-  if (bookKeywords.hasMatch(lowerText) ||
-      (validLines.length >= 6 && fullCleanText.length > 350)) {
-    final title = _pickProminentTitle(validLines);
-    return {
-      'pHashHex': pHashHex,
-      'category': VaultCategory.book.name,
-      'extractedTitle': title,
-      'cleanedText': fullCleanText,
-      'actionPayload': null,
-    };
-  }
-
-  // 5. Check Movie / TV Series / Cinema Poster
-  final movieKeywords = RegExp(
-    r'\b(imdb|netflix|disney\+|prime video|blutv|mubi|exxen|gain|hbo|apple tv|yönetmen|oyuncular|fragman|sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|s\d{1,2}e\d{1,2}|directed by|starring|trailer|cast|rottentomatoes|letterboxd|film|dizi|sinema|vizyon|yakında|coming soon|imax)\b',
-    caseSensitive: false,
-  );
-  if (movieKeywords.hasMatch(lowerText)) {
-    final title = _pickProminentTitle(validLines);
-    return {
-      'pHashHex': pHashHex,
-      'category': VaultCategory.movieSeries.name,
-      'extractedTitle': title,
-      'cleanedText': fullCleanText,
-      'actionPayload': null,
-    };
-  }
-
-  // Default fallback: If poster-like short prominent text or year -> Movie/Series; else Note
-  final yearMatch = RegExp(r'\b(19\d{2}|20[0-2]\d)\b').hasMatch(fullCleanText);
-  final fallbackTitle = _pickProminentTitle(validLines);
-  final isPosterLike =
-      validLines.isNotEmpty && validLines.length <= 5 && fallbackTitle.length >= 3;
-
   return {
+    'skip': false,
     'pHashHex': pHashHex,
-    'category': (yearMatch || isPosterLike)
-        ? VaultCategory.movieSeries.name
-        : VaultCategory.tempCode.name,
-    'extractedTitle':
-        fallbackTitle.isNotEmpty ? fallbackTitle : 'Galeri Kaydı',
-    'cleanedText':
-        fullCleanText.isNotEmpty ? fullCleanText : 'Görsel Kayıt',
-    'actionPayload':
-        (!yearMatch && fallbackTitle.isNotEmpty) ? fallbackTitle : null,
+    'category': matchedCategory,
+    'extractedTitle': extractedTitle,
+    'cleanedText': fullCleanText,
+    'actionPayload': actionPayload,
   };
+}
+
+bool _isValidMediaTitle(String title) {
+  final t = title.trim();
+  if (t.length < 3 || t.length > 65) return false;
+  // Reject purely numeric strings like "3" or "2024"
+  if (RegExp(r'^\d+$').hasMatch(t)) return false;
+  // Require at least 3 letters
+  final letterCount =
+      RegExp(r'[a-zA-ZçğıöşüÇĞİÖŞÜ]').allMatches(t).length;
+  if (letterCount < 3) return false;
+  // Reject single generic UI words like "Contact", "Search", "Home", "Unread"
+  final genericUiStop = RegExp(
+    r'^(contact|home|search|inbox|unread|profile|settings|login|logout|menu|notification|bildirim|ayarlar|anasayfa|iletişim|mesajlar|galeri|görsel kayıt)$',
+    caseSensitive: false,
+  );
+  if (genericUiStop.hasMatch(t)) return false;
+  return true;
 }
 
 String _stripBilingualSocialClutter(String raw) {
@@ -620,10 +696,10 @@ String _pickProminentTitle(
   List<Map<String, dynamic>> lines, {
   RegExp? ignoreRegex,
 }) {
-  if (lines.isEmpty) return 'Görsel Kayıt';
+  if (lines.isEmpty) return '';
 
   final episodeStrip = RegExp(
-    r'\b(sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|ep\.?\s*\d+|s\d+e\d+|hd|1080p|720p|4k|izle|watch|fragman|trailer|altyazılı|dublaj)\b',
+    r'\b(sezon\s*\d+|bölüm\s*\d+|season\s*\d+|episode\s*\d+|ep\.?\s*\d+|s\d+e\d+|hd|1080p|720p|4k|izle|watch|fragman|trailer|altyazılı|türkçe dublaj|dublaj|netflix|imdb|disney\+|prime video|blutv)\b',
     caseSensitive: false,
   );
 
@@ -639,11 +715,11 @@ String _pickProminentTitle(
       candidate = candidate.replaceAll(ignoreRegex, ' ').trim();
     }
     candidate = candidate.replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (candidate.length < 2 || candidate.length > 70) continue;
+    if (candidate.length < 3 || candidate.length > 65) continue;
 
     final letters =
-        RegExp(r'[a-zA-ZçğıöşüÇĞİÖŞÜ0-9]').allMatches(candidate).length;
-    if (letters < 2) continue;
+        RegExp(r'[a-zA-ZçğıöşüÇĞİÖŞÜ]').allMatches(candidate).length;
+    if (letters < 3) continue;
 
     final alphaRatio = letters / candidate.length;
     final score = height * (0.5 + alphaRatio);
@@ -654,7 +730,7 @@ String _pickProminentTitle(
     }
   }
 
-  return bestText ?? (lines.first['text'] as String? ?? 'Görsel Kayıt');
+  return bestText ?? '';
 }
 
 int hammingDistanceHex(String hexA, String hexB) {
@@ -674,7 +750,7 @@ int hammingDistanceHex(String hexA, String hexB) {
 }
 
 // ============================================================================
-// 5. ZERO-KEY PUBLIC METADATA ENRICHER (Jikan / TVMaze / iTunes / OpenLibrary)
+// 5. ZERO-KEY PUBLIC METADATA ENRICHER WITH STRICT SIMILARITY VERIFICATION
 // ============================================================================
 class EnrichedMetadata {
   final String title;
@@ -703,7 +779,10 @@ class MetadataEnricher {
         .replaceAll(RegExp(r'[^\w\sçğıöşüÇĞİÖŞÜ]'), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
-    if (cleanQuery.length < 2) return null;
+
+    if (!_isValidMediaTitle(cleanQuery)) return null;
+    final words = cleanQuery.split(' ');
+    if (words.length > 7) return null;
 
     try {
       switch (category) {
@@ -722,6 +801,31 @@ class MetadataEnricher {
     }
   }
 
+  /// Ensures API result title actually matches the OCR query (prevents
+  /// "Öğrenci Kulübü" -> "İslâm eğitiminde..." or "3" -> "3 (2012 TV Series)")
+  static bool _isTitleSimilar(String query, String apiTitle) {
+    String norm(String s) => s
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9çğıöşü\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    final nq = norm(query);
+    final na = norm(apiTitle);
+    if (nq.length < 3 || na.length < 3) return false;
+    if (na == nq) return true;
+    if (na.contains(nq) && nq.length >= 5) return true;
+    if (nq.contains(na) && na.length >= 5) return true;
+
+    final qWords = nq.split(' ').where((w) => w.length >= 3).toSet();
+    final aWords = na.split(' ').where((w) => w.length >= 3).toSet();
+    if (qWords.isEmpty || aWords.isEmpty) return false;
+
+    final overlap = qWords.intersection(aWords).length;
+    final minLen = qWords.length < aWords.length ? qWords.length : aWords.length;
+    return overlap > 0 && (overlap / minLen) >= 0.5;
+  }
+
   static Future<EnrichedMetadata?> _fetchAnimeJikan(String query) async {
     final uri = Uri.https(
       'api.jikan.moe',
@@ -735,7 +839,14 @@ class MetadataEnricher {
     if (list == null || list.isEmpty) return null;
 
     final item = list.first as Map<String, dynamic>;
-    final title = (item['title_english'] ?? item['title'])?.toString() ?? query;
+    final titleEn = item['title_english']?.toString() ?? '';
+    final titleJp = item['title']?.toString() ?? '';
+    final bestTitle = titleEn.isNotEmpty ? titleEn : titleJp;
+
+    if (!_isTitleSimilar(query, titleEn) && !_isTitleSimilar(query, titleJp)) {
+      return null;
+    }
+
     final episodes = item['episodes'];
     final year = item['year'];
     final score = (item['score'] as num?)?.toDouble();
@@ -745,7 +856,7 @@ class MetadataEnricher {
     final poster = (jpg?['large_image_url'] ?? jpg?['image_url'])?.toString();
 
     return EnrichedMetadata(
-      title: title,
+      title: bestTitle,
       subtitle: [
         if (year != null) '$year',
         if (episodes != null) '$episodes EP',
@@ -769,17 +880,17 @@ class MetadataEnricher {
       final results = body['results'] as List<dynamic>?;
       if (results != null && results.isNotEmpty) {
         final m = results.first as Map<String, dynamic>;
-        final trackName = m['trackName']?.toString();
-        final genre = m['primaryGenreName']?.toString();
-        final releaseDate = m['releaseDate']?.toString() ?? '';
-        final year =
-            releaseDate.length >= 4 ? releaseDate.substring(0, 4) : '';
-        final rawArt = m['artworkUrl100']?.toString();
-        final hiResArt = rawArt?.replaceAll('100x100bb', '600x600bb');
-        final desc = m['longDescription']?.toString() ??
-            m['shortDescription']?.toString();
+        final trackName = m['trackName']?.toString() ?? '';
+        if (_isTitleSimilar(query, trackName)) {
+          final genre = m['primaryGenreName']?.toString();
+          final releaseDate = m['releaseDate']?.toString() ?? '';
+          final year =
+              releaseDate.length >= 4 ? releaseDate.substring(0, 4) : '';
+          final rawArt = m['artworkUrl100']?.toString();
+          final hiResArt = rawArt?.replaceAll('100x100bb', '600x600bb');
+          final desc = m['longDescription']?.toString() ??
+              m['shortDescription']?.toString();
 
-        if (trackName != null) {
           return EnrichedMetadata(
             title: trackName,
             subtitle: [if (year.isNotEmpty) year, if (genre != null) genre]
@@ -800,7 +911,9 @@ class MetadataEnricher {
     final tvResp = await http.get(tvUri).timeout(_timeout);
     if (tvResp.statusCode == 200) {
       final show = jsonDecode(tvResp.body) as Map<String, dynamic>;
-      final name = show['name']?.toString() ?? query;
+      final name = show['name']?.toString() ?? '';
+      if (!_isTitleSimilar(query, name)) return null;
+
       final premiered = show['premiered']?.toString() ?? '';
       final year = premiered.length >= 4 ? premiered.substring(0, 4) : '';
       final ratingMap = show['rating'] as Map<String, dynamic>?;
@@ -828,7 +941,7 @@ class MetadataEnricher {
       'openlibrary.org',
       '/search.json',
       {
-        'q': query,
+        'title': query,
         'limit': '1',
         'fields': 'title,author_name,first_publish_year,cover_i,ratings_average'
       },
@@ -840,7 +953,9 @@ class MetadataEnricher {
     if (docs == null || docs.isEmpty) return null;
 
     final doc = docs.first as Map<String, dynamic>;
-    final title = doc['title']?.toString() ?? query;
+    final title = doc['title']?.toString() ?? '';
+    if (!_isTitleSimilar(query, title)) return null;
+
     final authors = (doc['author_name'] as List<dynamic>?)
         ?.map((e) => e.toString())
         .toList();
@@ -867,7 +982,7 @@ class MetadataEnricher {
 }
 
 // ============================================================================
-// 6. MAIN APPLICATION & FULL-GALLERY ON-DEMAND SCANNER
+// 6. MAIN APPLICATION & USER-CONTROLLED ON-DEMAND SCANNER
 // ============================================================================
 class SnapVaultApp extends StatelessWidget {
   const SnapVaultApp({super.key});
@@ -879,11 +994,11 @@ class SnapVaultApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
-        scaffoldBackgroundColor: const Color(0xFF0B0E14),
+        scaffoldBackgroundColor: const Color(0xFF090C12),
         colorScheme: const ColorScheme.dark(
           primary: Color(0xFF6366F1),
           secondary: Color(0xFF10B981),
-          surface: Color(0xFF151923),
+          surface: Color(0xFF131824),
         ),
         useMaterial3: true,
       ),
@@ -906,6 +1021,8 @@ class VaultHomeScreen extends StatefulWidget {
 }
 
 class _VaultHomeScreenState extends State<VaultHomeScreen> {
+  static const List<int> _scanLimitOptions = [25, 50, 100, 250, 500, 1000];
+
   AppLang _lang = AppLang.tr;
   L10n get _t => L10n(_lang);
 
@@ -915,9 +1032,12 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
   VaultCategory? _selectedCategory;
   String _searchQuery = '';
+  int _scanLimit = 25;
   bool _isScanning = false;
+  bool _cancelScanRequested = false;
   int _scanDoneCount = 0;
   int _scanTotalCount = 0;
+  int _scanFoundCount = 0;
   bool _permissionDenied = false;
   String _statusBanner = '';
 
@@ -937,13 +1057,15 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
   Future<void> _initializeVault() async {
     final savedLang = await SnapVaultDb.loadLanguage();
+    final savedLimit = await SnapVaultDb.loadScanLimit();
     final savedCards = await SnapVaultDb.loadAllCards();
     if (!mounted) return;
     setState(() {
       _lang = savedLang;
+      _scanLimit = _scanLimitOptions.contains(savedLimit) ? savedLimit : 25;
       _cards = savedCards;
     });
-    await _scanGalleryPhotos();
+    await _loadAlbumsOnly();
   }
 
   Future<void> _toggleLanguage() async {
@@ -953,27 +1075,74 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
     setState(() => _lang = next);
   }
 
-  Future<void> _resetAndRescan() async {
-    if (_isScanning) return;
-    await SnapVaultDb.clearProcessedAssets();
-    await _scanGalleryPhotos();
+  Future<void> _changeScanLimit(int newLimit) async {
+    await SnapVaultDb.saveScanLimit(newLimit);
+    if (!mounted) return;
+    setState(() => _scanLimit = newLimit);
   }
 
-  /// Requests ONLY Image permission (fixing Android 13/14/15/16 PermissionDelegate33
-  /// bug where RequestType.common fails if READ_MEDIA_VIDEO is absent) and scans
-  /// either the entire gallery ("All Photos") or the user-selected album.
-  Future<void> _scanGalleryPhotos() async {
-    if (_isScanning) return;
+  Future<void> _confirmAndResetAllData() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF151B28),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        title: Row(
+          children: [
+            const Icon(Icons.delete_forever_rounded, color: Color(0xFFF43F5E)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                _t.resetVaultTitle,
+                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Text(
+          _t.resetVaultConfirm,
+          style: const TextStyle(fontSize: 13, color: Colors.white70, height: 1.4),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(_t.cancel, style: const TextStyle(color: Colors.white60)),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFF43F5E),
+              foregroundColor: Colors.white,
+            ),
+            icon: const Icon(Icons.cleaning_services_rounded, size: 16),
+            label: Text(_t.resetNow),
+          ),
+        ],
+      ),
+    );
 
+    if (confirmed != true) return;
+    if (_isScanning) {
+      setState(() => _cancelScanRequested = true);
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    await SnapVaultDb.resetAllVaultData();
+    if (!mounted) return;
     setState(() {
-      _isScanning = true;
-      _scanDoneCount = 0;
-      _scanTotalCount = 0;
-      _statusBanner =
-          _t.isTr ? 'Galeri izinleri doğrulanıyor...' : 'Checking gallery access...';
+      _cards = [];
+      _statusBanner = _t.resetDoneToast;
     });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(_t.resetDoneToast),
+        backgroundColor: const Color(0xFF6366F1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
 
-    // CRITICAL FIX: Request ONLY RequestType.image so Android 13+ never checks READ_MEDIA_VIDEO!
+  Future<void> _loadAlbumsOnly() async {
     try {
       const permOption = PermissionRequestOption(
         androidPermission: AndroidPermission(
@@ -982,7 +1151,59 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         ),
       );
       await PhotoManager.requestPermissionExtend(requestOption: permOption);
-      // Bypass internal video permission gate in photo_manager when user granted photo access
+      await PhotoManager.setIgnorePermissionCheck(true);
+
+      final paths = await PhotoManager.getAssetPathList(
+        type: RequestType.image,
+        hasAll: true,
+        filterOption: FilterOptionGroup(
+          orders: [
+            const OrderOption(type: OrderOptionType.createDate, asc: false),
+          ],
+        ),
+      );
+      if (paths.isEmpty) {
+        if (mounted) setState(() => _permissionDenied = true);
+        return;
+      }
+
+      final List<_AlbumEntry> nonEmpty = [];
+      for (final album in paths) {
+        final c = await album.assetCountAsync;
+        if (c > 0) nonEmpty.add(_AlbumEntry(album, c));
+      }
+      if (mounted && nonEmpty.isNotEmpty) {
+        setState(() {
+          _permissionDenied = false;
+          _albums = nonEmpty;
+          _selectedAlbum ??= nonEmpty.first.album;
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _scanGalleryPhotos() async {
+    if (_isScanning) return;
+
+    setState(() {
+      _isScanning = true;
+      _cancelScanRequested = false;
+      _scanDoneCount = 0;
+      _scanTotalCount = 0;
+      _scanFoundCount = 0;
+      _statusBanner = _t.isTr
+          ? 'Galeri okunuyor ($_scanLimit fotoğraf hazırlanıyor)...'
+          : 'Reading gallery (preparing $_scanLimit photos)...';
+    });
+
+    try {
+      const permOption = PermissionRequestOption(
+        androidPermission: AndroidPermission(
+          type: RequestType.image,
+          mediaLocation: false,
+        ),
+      );
+      await PhotoManager.requestPermissionExtend(requestOption: permOption);
       await PhotoManager.setIgnorePermissionCheck(true);
     } catch (_) {}
 
@@ -1010,17 +1231,10 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         return;
       }
 
-      if (mounted) {
-        setState(() => _permissionDenied = false);
-      }
-
-      // Build list of non-empty albums (with "All Gallery / Recent" first)
       final List<_AlbumEntry> nonEmptyAlbums = [];
       for (final album in paths) {
         final c = await album.assetCountAsync;
-        if (c > 0) {
-          nonEmptyAlbums.add(_AlbumEntry(album, c));
-        }
+        if (c > 0) nonEmptyAlbums.add(_AlbumEntry(album, c));
       }
 
       if (nonEmptyAlbums.isEmpty) {
@@ -1028,14 +1242,13 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           setState(() {
             _isScanning = false;
             _statusBanner = _t.isTr
-                ? 'Galeride hiç fotoğraf bulunamadı.'
+                ? 'Galeride fotoğraf bulunamadı.'
                 : 'No photos found in gallery.';
           });
         }
         return;
       }
 
-      // Default to the first album ("All Photos / Tüm Galeri") unless user picked one
       AssetPathEntity activeAlbum = nonEmptyAlbums.first.album;
       int activeAlbumCount = nonEmptyAlbums.first.count;
       if (_selectedAlbum != null) {
@@ -1050,6 +1263,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
       if (mounted) {
         setState(() {
+          _permissionDenied = false;
           _albums = nonEmptyAlbums;
           _selectedAlbum = activeAlbum;
         });
@@ -1057,18 +1271,18 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
       final processedIds = await SnapVaultDb.loadProcessedAssetIds();
       final List<AssetEntity> newAssets = [];
+      final int targetLimit = _scanLimit;
 
-      // Page through the active album (All Gallery or selected album) to collect 25 unprocessed photos
       int page = 0;
-      const int pageSize = 50;
-      while (newAssets.length < 25 && page < 100) {
+      const int pageSize = 80;
+      while (newAssets.length < targetLimit && page < 250) {
         final pageAssets =
             await activeAlbum.getAssetListPaged(page: page, size: pageSize);
         if (pageAssets.isEmpty) break;
         for (final a in pageAssets) {
           if (!processedIds.contains(a.id)) {
             newAssets.add(a);
-            if (newAssets.length >= 25) break;
+            if (newAssets.length >= targetLimit) break;
           }
         }
         if (pageAssets.length < pageSize) break;
@@ -1080,8 +1294,8 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           setState(() {
             _isScanning = false;
             _statusBanner = _t.isTr
-                ? 'Toplam $activeAlbumCount fotoğraf incelendi (Tümü zaten tarandı).'
-                : 'Checked $activeAlbumCount photos (All already scanned).';
+                ? 'Bu albümdeki tüm fotoğraflar ($activeAlbumCount) zaten incelendi. Tekrar taramak için sağ üstten Sıfırla butonunu kullanabilirsiniz.'
+                : 'All $activeAlbumCount photos in this album were already checked.';
           });
         }
         return;
@@ -1091,8 +1305,8 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         setState(() {
           _scanTotalCount = newAssets.length;
           _statusBanner = _t.isTr
-              ? 'Galeri ($activeAlbumCount foto) • ${newAssets.length} fotoğraf işleniyor...'
-              : 'Gallery ($activeAlbumCount photos) • Processing ${newAssets.length}...';
+              ? '${newAssets.length} fotoğraf analiz ediliyor...'
+              : 'Analyzing ${newAssets.length} photos...';
         });
       }
 
@@ -1103,22 +1317,25 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       }
 
       int addedCardsCount = 0;
-      int burstMergedCount = 0;
+      int skippedCount = 0;
 
       const int batchSize = 5;
       for (int i = 0; i < newAssets.length; i += batchSize) {
+        if (_cancelScanRequested) break;
         final batch = newAssets.skip(i).take(batchSize).toList();
 
         for (final asset in batch) {
+          if (_cancelScanRequested) break;
           try {
             final file = await asset.file;
             final thumbBytes = await asset.thumbnailDataWithSize(
               const ThumbnailSize(480, 854),
-              quality: 85,
+              quality: 84,
             );
 
             if (file == null || thumbBytes == null) {
               await SnapVaultDb.markAssetProcessed(asset.id);
+              skippedCount++;
               if (mounted) setState(() => _scanDoneCount++);
               continue;
             }
@@ -1141,6 +1358,14 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
               }
             } catch (_) {}
 
+            if (rawLines.isEmpty) {
+              // Fast path: photo has no text (wallpaper, selfie, landscape) -> skip immediately!
+              await SnapVaultDb.markAssetProcessed(asset.id);
+              skippedCount++;
+              if (mounted) setState(() => _scanDoneCount++);
+              continue;
+            }
+
             final safeId = asset.id.replaceAll(RegExp(r'[^a-zA-Z0-9_]'), '_');
             final targetThumbPath = p.join(
               thumbDir.path,
@@ -1158,6 +1383,13 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
             final result =
                 await compute(processScreenshotInIsolate, isolatePayload);
 
+            if (result['skip'] == true) {
+              await SnapVaultDb.markAssetProcessed(asset.id);
+              skippedCount++;
+              if (mounted) setState(() => _scanDoneCount++);
+              continue;
+            }
+
             final String pHashHex = result['pHashHex'] as String;
             final String catName = result['category'] as String;
             final VaultCategory category = VaultCategory.values.firstWhere(
@@ -1170,13 +1402,17 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
             final capturedMs = asset.createDateTime.millisecondsSinceEpoch;
 
+            // Burst-shot & near-duplicate grouping (within 60s or identical pHash/title)
             VaultCard? burstTarget;
             for (final existing in _cards) {
               final timeDiffMs = (capturedMs - existing.capturedEpochMs).abs();
               final pHashDist = hammingDistanceHex(pHashHex, existing.pHashHex);
+              final sameTitle = existing.extractedTitle.toLowerCase() ==
+                  extractedTitle.toLowerCase();
               if (existing.category == category &&
-                  timeDiffMs <= 4000 &&
-                  pHashDist <= 6) {
+                  ((timeDiffMs <= 15000 && pHashDist <= 8) ||
+                      (pHashDist <= 4) ||
+                      (sameTitle && timeDiffMs <= 120000))) {
                 burstTarget = existing;
                 break;
               }
@@ -1196,7 +1432,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
               if (idx != -1 && mounted) {
                 setState(() => _cards[idx] = updatedCard);
               }
-              burstMergedCount++;
             } else {
               final newCard = VaultCard(
                 id: 'card_${capturedMs}_$safeId',
@@ -1215,14 +1450,15 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
               await SnapVaultDb.upsertCard(newCard);
               await SnapVaultDb.markAssetProcessed(asset.id);
 
+              addedCardsCount++;
               if (mounted) {
                 setState(() {
+                  _scanFoundCount = addedCardsCount;
                   _cards.add(newCard);
                   _cards.sort(
                       (a, b) => b.capturedEpochMs.compareTo(a.capturedEpochMs));
                 });
               }
-              addedCardsCount++;
 
               unawaited(_enrichCardInBackground(newCard));
             }
@@ -1233,13 +1469,17 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           if (mounted) {
             setState(() => _scanDoneCount++);
           }
-          await Future.delayed(const Duration(milliseconds: 16));
+          await Future.delayed(const Duration(milliseconds: 12));
         }
       }
 
       if (mounted) {
         setState(() {
-          _statusBanner = _t.scanCompleteMsg(addedCardsCount, burstMergedCount);
+          _statusBanner = _t.scanCompleteMsg(
+            _scanDoneCount,
+            addedCardsCount,
+            skippedCount,
+          );
         });
       }
     } catch (e) {
@@ -1251,7 +1491,10 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
     } finally {
       await textRecognizer.close();
       if (mounted) {
-        setState(() => _isScanning = false);
+        setState(() {
+          _isScanning = false;
+          _cancelScanRequested = false;
+        });
       }
     }
   }
@@ -1343,10 +1586,11 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
       if (_searchQuery.trim().isNotEmpty) {
         final q = _searchQuery.toLowerCase();
         final matchTitle = card.displayTitle.toLowerCase().contains(q);
+        final matchExtracted = card.extractedTitle.toLowerCase().contains(q);
         final matchOcr = card.cleanedOcrText.toLowerCase().contains(q);
         final matchPayload =
             (card.actionPayload ?? '').toLowerCase().contains(q);
-        return matchTitle || matchOcr || matchPayload;
+        return matchTitle || matchExtracted || matchOcr || matchPayload;
       }
       return true;
     }).toList();
@@ -1367,24 +1611,23 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: const Color(0xFF0B0E14),
+        backgroundColor: const Color(0xFF090C12),
         elevation: 0,
         title: Row(
           children: [
-            // Custom SnapVault Neon Brand Emblem
             Container(
               width: 34,
               height: 34,
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
-                  colors: [Color(0xFF6366F1), Color(0xFF10B981)],
+                  colors: [Color(0xFF6366F1), Color(0xFF06B6D4)],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: const Icon(
-                Icons.shield_moon_rounded,
+                Icons.center_focus_strong_rounded,
                 color: Colors.white,
                 size: 20,
               ),
@@ -1408,7 +1651,6 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                     style: const TextStyle(
                       fontSize: 11,
                       color: Colors.white54,
-                      fontWeight: FontWeight.w400,
                     ),
                   ),
                 ],
@@ -1417,55 +1659,72 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           ],
         ),
         actions: [
-          Padding(
-            padding: const EdgeInsets.only(right: 4),
-            child: TextButton.icon(
-              onPressed: _toggleLanguage,
-              style: TextButton.styleFrom(
-                backgroundColor: const Color(0xFF1E2433),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(20),
-                ),
+          // Language Switch (TR / EN)
+          TextButton.icon(
+            onPressed: _toggleLanguage,
+            style: TextButton.styleFrom(
+              backgroundColor: const Color(0xFF171D2B),
+              padding: const EdgeInsets.symmetric(horizontal: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(18),
               ),
-              icon: const Icon(Icons.language, size: 16, color: Colors.white70),
-              label: Text(
-                _lang == AppLang.tr ? 'TR' : 'EN',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 12,
-                ),
+            ),
+            icon: const Icon(Icons.language, size: 15, color: Colors.white70),
+            label: Text(
+              _lang == AppLang.tr ? 'TR' : 'EN',
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
               ),
             ),
           ),
+          const SizedBox(width: 6),
+          // Reset All Data Button (Wipes DB & Scan History)
           IconButton(
-            tooltip: _t.rescanAll,
-            onPressed: _isScanning ? null : _resetAndRescan,
-            icon: const Icon(Icons.refresh_rounded, color: Colors.white70),
+            tooltip: _t.resetVaultTitle,
+            onPressed: _confirmAndResetAllData,
+            style: IconButton.styleFrom(
+              backgroundColor: const Color(0xFF2A1520),
+            ),
+            icon: const Icon(
+              Icons.delete_forever_rounded,
+              color: Color(0xFFF43F5E),
+              size: 20,
+            ),
           ),
+          const SizedBox(width: 8),
         ],
       ),
       body: Column(
         children: [
-          // Live Status & Progress Bar
+          // 1. Live Scan Progress Banner
           if (_isScanning || _statusBanner.isNotEmpty)
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: const Color(0xFF151923),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+              decoration: const BoxDecoration(
+                color: Color(0xFF131824),
+                border: Border(
+                  bottom: BorderSide(color: Colors.white10),
+                ),
+              ),
               child: Row(
                 children: [
                   if (_isScanning) ...[
                     const SizedBox(
                       width: 14,
                       height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Color(0xFF06B6D4),
+                      ),
                     ),
                     const SizedBox(width: 10),
                   ] else ...[
                     const Icon(
-                      Icons.check_circle_outline_rounded,
-                      size: 15,
+                      Icons.verified_rounded,
+                      size: 16,
                       color: Color(0xFF10B981),
                     ),
                     const SizedBox(width: 8),
@@ -1473,122 +1732,203 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                   Expanded(
                     child: Text(
                       _isScanning
-                          ? '${_t.scanning} ($_scanDoneCount / $_scanTotalCount) — $_statusBanner'
+                          ? '${_t.isTr ? "Taranıyor" : "Scanning"} ($_scanDoneCount / $_scanTotalCount) • ${_t.isTr ? "Bulunan Kart" : "Found"}: $_scanFoundCount'
                           : _statusBanner,
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.white70),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.white,
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                   ),
                 ],
               ),
             ),
 
-          // Album Selector Row (All Gallery, Camera, Screenshots, WhatsApp, etc.)
-          if (_albums.isNotEmpty)
-            SizedBox(
-              height: 38,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.fromLTRB(14, 6, 14, 0),
-                itemCount: _albums.length,
-                itemBuilder: (ctx, idx) {
-                  final entry = _albums[idx];
-                  final isSel = _selectedAlbum?.id == entry.album.id;
-                  final displayAlbumName =
-                      entry.album.isAll ? _t.allGalleryAlbum : entry.album.name;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: InkWell(
-                      onTap: _isScanning
-                          ? null
-                          : () {
-                              setState(() => _selectedAlbum = entry.album);
-                              _scanGalleryPhotos();
-                            },
-                      borderRadius: BorderRadius.circular(16),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: isSel
-                              ? const Color(0xFF10B981).withValues(alpha: 0.2)
-                              : const Color(0xFF151923),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                            color: isSel
-                                ? const Color(0xFF10B981)
-                                : Colors.white10,
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Icon(
-                              entry.album.isAll
-                                  ? Icons.photo_library_rounded
-                                  : Icons.folder_open_rounded,
-                              size: 13,
-                              color: isSel
-                                  ? const Color(0xFF10B981)
-                                  : Colors.white54,
-                            ),
-                            const SizedBox(width: 5),
-                            Text(
-                              '$displayAlbumName (${entry.count})',
-                              style: TextStyle(
-                                fontSize: 11,
-                                fontWeight:
-                                    isSel ? FontWeight.bold : FontWeight.w500,
+          // 2. Album Selector + User-Selectable Scan Batch Limit (25 .. 1000)
+          Container(
+            padding: const EdgeInsets.fromLTRB(14, 8, 14, 4),
+            child: Column(
+              children: [
+                if (_albums.isNotEmpty)
+                  SizedBox(
+                    height: 34,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _albums.length,
+                      itemBuilder: (ctx, idx) {
+                        final entry = _albums[idx];
+                        final isSel = _selectedAlbum?.id == entry.album.id;
+                        final displayAlbumName = entry.album.isAll
+                            ? _t.allGalleryAlbum
+                            : entry.album.name;
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: InkWell(
+                            onTap: _isScanning
+                                ? null
+                                : () {
+                                    setState(() => _selectedAlbum = entry.album);
+                                  },
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
                                 color: isSel
                                     ? const Color(0xFF10B981)
-                                    : Colors.white70,
+                                        .withValues(alpha: 0.18)
+                                    : const Color(0xFF131824),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: isSel
+                                      ? const Color(0xFF10B981)
+                                      : Colors.white10,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    entry.album.isAll
+                                        ? Icons.photo_library_rounded
+                                        : Icons.folder_rounded,
+                                    size: 13,
+                                    color: isSel
+                                        ? const Color(0xFF10B981)
+                                        : Colors.white54,
+                                  ),
+                                  const SizedBox(width: 5),
+                                  Text(
+                                    '$displayAlbumName (${entry.count})',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: isSel
+                                          ? FontWeight.bold
+                                          : FontWeight.w500,
+                                      color: isSel
+                                          ? const Color(0xFF10B981)
+                                          : Colors.white70,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
-                          ],
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                const SizedBox(height: 6),
+                // Scan Batch Limit Selector Row (25 / 50 / 100 / 250 / 500 / 1000)
+                SizedBox(
+                  height: 30,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    children: [
+                      Center(
+                        child: Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: Text(
+                            _t.scanLimitLabel,
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Colors.white54,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  );
-                },
-              ),
+                      for (final limitOpt in _scanLimitOptions)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 6),
+                          child: InkWell(
+                            onTap: _isScanning
+                                ? null
+                                : () => _changeScanLimit(limitOpt),
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: _scanLimit == limitOpt
+                                    ? const Color(0xFF6366F1)
+                                    : const Color(0xFF131824),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: _scanLimit == limitOpt
+                                      ? const Color(0xFF818CF8)
+                                      : Colors.white10,
+                                ),
+                              ),
+                              child: Center(
+                                child: Text(
+                                  '$limitOpt',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: _scanLimit == limitOpt
+                                        ? FontWeight.w800
+                                        : FontWeight.w500,
+                                    color: _scanLimit == limitOpt
+                                        ? Colors.white
+                                        : Colors.white60,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ],
             ),
+          ),
 
-          // Instant Offline Search Bar + Bulk Gallery Clean-up Button
+          // 3. Search Bar + Bulk Gallery Clean-up Button
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 8, 14, 6),
+            padding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
             child: Row(
               children: [
                 Expanded(
-                  child: TextField(
-                    controller: _searchCtrl,
-                    onChanged: (v) => setState(() => _searchQuery = v),
-                    style: const TextStyle(fontSize: 14),
-                    decoration: InputDecoration(
-                      hintText: _t.searchHint,
-                      hintStyle:
-                          const TextStyle(color: Colors.white38, fontSize: 13),
-                      prefixIcon: const Icon(
-                        Icons.search_rounded,
-                        size: 20,
-                        color: Colors.white54,
-                      ),
-                      suffixIcon: _searchQuery.isNotEmpty
-                          ? IconButton(
-                              icon: const Icon(Icons.clear, size: 18),
-                              onPressed: () {
-                                _searchCtrl.clear();
-                                setState(() => _searchQuery = '');
-                              },
-                            )
-                          : null,
-                      filled: true,
-                      fillColor: const Color(0xFF151923),
-                      contentPadding: const EdgeInsets.symmetric(vertical: 0),
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(14),
-                        borderSide: BorderSide.none,
+                  child: SizedBox(
+                    height: 40,
+                    child: TextField(
+                      controller: _searchCtrl,
+                      onChanged: (v) => setState(() => _searchQuery = v),
+                      style: const TextStyle(fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: _t.searchHint,
+                        hintStyle: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 12,
+                        ),
+                        prefixIcon: const Icon(
+                          Icons.search_rounded,
+                          size: 18,
+                          color: Colors.white54,
+                        ),
+                        suffixIcon: _searchQuery.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear, size: 16),
+                                onPressed: () {
+                                  _searchCtrl.clear();
+                                  setState(() => _searchQuery = '');
+                                },
+                              )
+                            : null,
+                        filled: true,
+                        fillColor: const Color(0xFF131824),
+                        contentPadding:
+                            const EdgeInsets.symmetric(vertical: 0),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide.none,
+                        ),
                       ),
                     ),
                   ),
@@ -1598,20 +1938,23 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                   FilledButton.tonalIcon(
                     onPressed: _purgeAllProcessedFromGallery,
                     style: FilledButton.styleFrom(
-                      backgroundColor: const Color(0xFF3B1D2E),
+                      backgroundColor: const Color(0xFF331826),
                       foregroundColor: const Color(0xFFF43F5E),
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 12,
-                        vertical: 12,
+                        horizontal: 10,
+                        vertical: 10,
                       ),
                       shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
+                        borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    icon: const Icon(Icons.cleaning_services_rounded, size: 18),
+                    icon: const Icon(Icons.cleaning_services_rounded, size: 16),
                     label: Text(
                       '$unpurgedCount',
-                      style: const TextStyle(fontWeight: FontWeight.bold),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 12,
+                      ),
                     ),
                   ),
                 ],
@@ -1619,38 +1962,42 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
             ),
           ),
 
-          // Category Filter Chips
+          // 4. Category Filter Chips with Live Counts
           SizedBox(
-            height: 44,
+            height: 40,
             child: ListView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 14),
               children: [
-                _buildCategoryChip(null, _t.catAll, Icons.grid_view_rounded),
                 _buildCategoryChip(
-                  VaultCategory.tempCode,
-                  _t.catTemp,
-                  Icons.qr_code_2_rounded,
+                  null,
+                  '${_t.catAll} (${_cards.length})',
+                  Icons.grid_view_rounded,
                 ),
                 _buildCategoryChip(
                   VaultCategory.movieSeries,
-                  _t.catMovie,
+                  '${_t.catMovie} (${_cards.where((c) => c.category == VaultCategory.movieSeries).length})',
                   Icons.movie_creation_outlined,
                 ),
                 _buildCategoryChip(
                   VaultCategory.anime,
-                  _t.catAnime,
+                  '${_t.catAnime} (${_cards.where((c) => c.category == VaultCategory.anime).length})',
                   Icons.auto_awesome_rounded,
                 ),
                 _buildCategoryChip(
                   VaultCategory.book,
-                  _t.catBook,
+                  '${_t.catBook} (${_cards.where((c) => c.category == VaultCategory.book).length})',
                   Icons.menu_book_rounded,
                 ),
                 _buildCategoryChip(
                   VaultCategory.shopping,
-                  _t.catShopping,
+                  '${_t.catShopping} (${_cards.where((c) => c.category == VaultCategory.shopping).length})',
                   Icons.shopping_bag_outlined,
+                ),
+                _buildCategoryChip(
+                  VaultCategory.tempCode,
+                  '${_t.catTemp} (${_cards.where((c) => c.category == VaultCategory.tempCode).length})',
+                  Icons.qr_code_2_rounded,
                 ),
               ],
             ),
@@ -1658,20 +2005,20 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 
           const SizedBox(height: 6),
 
-          // Main Rich Media Card Grid
+          // 5. Transparent Source-to-Match Rich Media Grid
           Expanded(
             child: _permissionDenied
                 ? _buildPermissionDeniedView()
                 : visibleCards.isEmpty
                     ? _buildEmptyStateView()
                     : GridView.builder(
-                        padding: const EdgeInsets.fromLTRB(14, 6, 14, 88),
+                        padding: const EdgeInsets.fromLTRB(14, 4, 14, 88),
                         gridDelegate:
                             const SliverGridDelegateWithFixedCrossAxisCount(
                           crossAxisCount: 2,
                           mainAxisSpacing: 12,
                           crossAxisSpacing: 12,
-                          childAspectRatio: 0.64,
+                          childAspectRatio: 0.58,
                         ),
                         itemCount: visibleCards.length,
                         itemBuilder: (context, index) {
@@ -1696,13 +2043,22 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _isScanning ? null : _scanGalleryPhotos,
-        backgroundColor: const Color(0xFF6366F1),
+        onPressed: _isScanning
+            ? () => setState(() => _cancelScanRequested = true)
+            : _scanGalleryPhotos,
+        backgroundColor:
+            _isScanning ? const Color(0xFFF43F5E) : const Color(0xFF6366F1),
         foregroundColor: Colors.white,
-        icon: const Icon(Icons.document_scanner_rounded),
+        icon: Icon(
+          _isScanning
+              ? Icons.stop_circle_outlined
+              : Icons.document_scanner_rounded,
+        ),
         label: Text(
-          _t.scanNow,
-          style: const TextStyle(fontWeight: FontWeight.w700),
+          _isScanning
+              ? '${_t.stopScan} ($_scanDoneCount/$_scanTotalCount)'
+              : _t.scanNextN(_scanLimit),
+          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
         ),
       ),
     );
@@ -1721,19 +2077,19 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
         onSelected: (_) => setState(() => _selectedCategory = cat),
         avatar: Icon(
           icon,
-          size: 16,
+          size: 15,
           color: isSelected ? Colors.white : Colors.white60,
         ),
         label: Text(label),
         labelStyle: TextStyle(
-          fontSize: 12,
+          fontSize: 11,
           fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
           color: isSelected ? Colors.white : Colors.white70,
         ),
         selectedColor: const Color(0xFF6366F1),
-        backgroundColor: const Color(0xFF151923),
+        backgroundColor: const Color(0xFF131824),
         side: BorderSide.none,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       ),
     );
   }
@@ -1777,28 +2133,28 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 76,
-              height: 76,
+              width: 72,
+              height: 72,
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
-                  colors: [Color(0xFF6366F1), Color(0xFF10B981)],
+                  colors: [Color(0xFF6366F1), Color(0xFF06B6D4)],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
-                borderRadius: BorderRadius.circular(24),
+                borderRadius: BorderRadius.circular(22),
               ),
               child: const Icon(
-                Icons.shield_moon_rounded,
-                size: 42,
+                Icons.center_focus_strong_rounded,
+                size: 38,
                 color: Colors.white,
               ),
             ),
-            const SizedBox(height: 18),
+            const SizedBox(height: 16),
             Text(
               _t.emptyStateTitle,
               textAlign: TextAlign.center,
               style: const TextStyle(
-                fontSize: 17,
+                fontSize: 16,
                 fontWeight: FontWeight.bold,
               ),
             ),
@@ -1807,9 +2163,9 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
               _t.emptyStateSub,
               textAlign: TextAlign.center,
               style: const TextStyle(
-                fontSize: 13,
+                fontSize: 12,
                 color: Colors.white60,
-                height: 1.4,
+                height: 1.45,
               ),
             ),
           ],
@@ -1822,94 +2178,209 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF151923),
+      backgroundColor: const Color(0xFF131824),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       builder: (ctx) {
+        final hasPoster =
+            card.apiPosterUrl != null && card.apiPosterUrl!.startsWith('http');
         return DraggableScrollableSheet(
           expand: false,
-          initialChildSize: 0.72,
-          maxChildSize: 0.92,
-          minChildSize: 0.45,
+          initialChildSize: 0.78,
+          maxChildSize: 0.94,
+          minChildSize: 0.50,
           builder: (_, scrollCtrl) {
             return ListView(
               controller: scrollCtrl,
               padding: const EdgeInsets.all(20),
               children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(12),
-                      child: SizedBox(
-                        width: 90,
-                        height: 130,
-                        child: _buildCardImage(card),
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            _t.categoryLabel(card.category).toUpperCase(),
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.w800,
-                              color: _categoryColor(card.category),
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            card.displayTitle,
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                          if (card.apiSubtitle != null) ...[
-                            const SizedBox(height: 4),
+                // Side-by-Side Comparison: [Original Photo] -> [Matched API Poster]
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF090C12),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.white10),
+                  ),
+                  child: Row(
+                    children: [
+                      // 1. User's Actual Gallery Screenshot/Photo
+                      Expanded(
+                        child: Column(
+                          children: [
                             Text(
-                              card.apiSubtitle!,
+                              _t.isTr
+                                  ? '📷 Kaynak Fotoğrafın'
+                                  : '📷 Your Photo',
                               style: const TextStyle(
-                                fontSize: 12,
-                                color: Colors.white60,
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white70,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(10),
+                              child: SizedBox(
+                                height: 140,
+                                width: double.infinity,
+                                child: _buildLocalThumbImage(
+                                  card.localThumbPath,
+                                ),
                               ),
                             ),
                           ],
-                          if (card.apiRating != null) ...[
-                            const SizedBox(height: 6),
-                            Row(
-                              children: [
-                                const Icon(Icons.star_rounded,
-                                    color: Colors.amber, size: 16),
-                                const SizedBox(width: 4),
-                                Text(
-                                  card.apiRating!.toStringAsFixed(1),
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 13,
+                        ),
+                      ),
+                      if (hasPoster) ...[
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10),
+                          child: Icon(
+                            Icons.arrow_forward_rounded,
+                            color: Color(0xFF06B6D4),
+                            size: 22,
+                          ),
+                        ),
+                        // 2. Matched API Poster
+                        Expanded(
+                          child: Column(
+                            children: [
+                              Text(
+                                _t.isTr
+                                    ? '✨ Bulunan Eşleşme'
+                                    : '✨ Matched Poster',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: Color(0xFF06B6D4),
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: SizedBox(
+                                  height: 140,
+                                  width: double.infinity,
+                                  child: Image(
+                                    image: ResizeImage(
+                                      NetworkImage(card.apiPosterUrl!),
+                                      width: 400,
+                                    ),
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (_, __, ___) =>
+                                        _buildLocalThumbImage(
+                                            card.localThumbPath),
                                   ),
                                 ),
-                              ],
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 16),
+
+                // Category & Matched Title
+                Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _categoryColor(card.category),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _t.categoryLabel(card.category),
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                    if (card.apiRating != null) ...[
+                      const SizedBox(width: 10),
+                      const Icon(Icons.star_rounded,
+                          color: Colors.amber, size: 18),
+                      const SizedBox(width: 4),
+                      Text(
+                        card.apiRating!.toStringAsFixed(1),
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  card.displayTitle,
+                  style: const TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                if (card.apiSubtitle != null) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    card.apiSubtitle!,
+                    style: const TextStyle(fontSize: 13, color: Colors.white60),
+                  ),
+                ],
+                const SizedBox(height: 12),
+
+                // Exact OCR Trigger Line Box
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1A2130),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: const Color(0xFF6366F1).withValues(alpha: 0.4),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _t.readFromPhotoLabel,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF818CF8),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      SelectableText(
+                        card.extractedTitle,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 12),
+
                 if (card.actionPayload != null &&
                     card.actionPayload!.isNotEmpty) ...[
                   Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0B0E14),
+                      color: const Color(0xFF090C12),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: Colors.white12),
+                      border: Border.all(
+                        color: const Color(0xFF10B981).withValues(alpha: 0.5),
+                      ),
                     ),
                     child: Row(
                       children: [
@@ -1924,8 +2395,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                             ),
                           ),
                         ),
-                        IconButton(
-                          icon: const Icon(Icons.copy_rounded, size: 18),
+                        FilledButton.tonalIcon(
                           onPressed: () {
                             Clipboard.setData(
                               ClipboardData(text: card.actionPayload!),
@@ -1934,12 +2404,15 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                               SnackBar(content: Text(_t.copiedToast)),
                             );
                           },
+                          icon: const Icon(Icons.copy_rounded, size: 16),
+                          label: Text(_t.copyPayload),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 14),
                 ],
+
                 if (card.apiSummary != null && card.apiSummary!.isNotEmpty) ...[
                   Text(
                     card.apiSummary!,
@@ -1949,14 +2422,15 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                       height: 1.45,
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 14),
                 ],
+
                 const Divider(color: Colors.white12),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
                   _t.isTr
-                      ? 'Okunan Metin (OCR):'
-                      : 'Extracted Text (OCR):',
+                      ? 'Fotoğraftaki Tüm Metin (Tam OCR):'
+                      : 'Full OCR Text from Photo:',
                   style: const TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.bold,
@@ -1972,7 +2446,7 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
                     height: 1.4,
                   ),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 18),
                 if (!card.isPurgedFromGallery)
                   FilledButton.icon(
                     onPressed: () {
@@ -1998,7 +2472,9 @@ class _VaultHomeScreenState extends State<VaultHomeScreen> {
 }
 
 // ============================================================================
-// 7. ANTI-JANK RICH MEDIA CARD WIDGET (ResizeImage cacheWidth: 400)
+// 7. TRANSPARENT SOURCE-TO-MATCH CARD WIDGET
+//    Always displays the user's own screenshot as the main image, plus a
+//    Picture-in-Picture matched API poster and explicit "Okunan:" source line!
 // ============================================================================
 class _RichMediaCardWidget extends StatelessWidget {
   final VaultCard card;
@@ -2018,38 +2494,45 @@ class _RichMediaCardWidget extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final badgeColor = _categoryColor(card.category);
+    final hasPoster =
+        card.apiPosterUrl != null && card.apiPosterUrl!.startsWith('http');
+    final hasCopyablePayload =
+        card.actionPayload != null && card.actionPayload!.trim().isNotEmpty;
 
     return GestureDetector(
       onTap: onTapCard,
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFF151923),
+          color: const Color(0xFF131824),
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
         ),
         clipBehavior: Clip.antiAlias,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // TOP IMAGE AREA: Always shows user's own screenshot + PiP API Poster
             Expanded(
               flex: 5,
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  _buildCardImage(card),
+                  // 1. User's Actual Gallery Screenshot (Never hidden!)
+                  _buildLocalThumbImage(card.localThumbPath),
                   const DecoratedBox(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
                         colors: [
-                          Colors.black38,
+                          Colors.black45,
                           Colors.transparent,
-                          Color(0xE6151923),
+                          Color(0xEE131824),
                         ],
                       ),
                     ),
                   ),
+                  // 2. Category Badge (Top-Left)
                   Positioned(
                     top: 8,
                     left: 8,
@@ -2059,7 +2542,7 @@ class _RichMediaCardWidget extends StatelessWidget {
                         vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color: badgeColor.withValues(alpha: 0.9),
+                        color: badgeColor.withValues(alpha: 0.92),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       child: Text(
@@ -2072,6 +2555,7 @@ class _RichMediaCardWidget extends StatelessWidget {
                       ),
                     ),
                   ),
+                  // 3. Rating or Burst Badge (Top-Right)
                   if (card.apiRating != null)
                     Positioned(
                       top: 8,
@@ -2128,52 +2612,121 @@ class _RichMediaCardWidget extends StatelessWidget {
                         ),
                       ),
                     ),
+
+                  // 4. Picture-in-Picture Matched API Poster (Bottom-Right of Image)
+                  if (hasPoster)
+                    Positioned(
+                      bottom: 6,
+                      right: 8,
+                      child: Container(
+                        width: 44,
+                        height: 62,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(
+                            color: const Color(0xFF06B6D4),
+                            width: 1.5,
+                          ),
+                          boxShadow: const [
+                            BoxShadow(
+                              color: Colors.black87,
+                              blurRadius: 6,
+                            ),
+                          ],
+                        ),
+                        clipBehavior: Clip.antiAlias,
+                        child: Image(
+                          image: ResizeImage(
+                            NetworkImage(card.apiPosterUrl!),
+                            width: 160,
+                          ),
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        ),
+                      ),
+                    ),
                 ],
               ),
             ),
+
+            // BOTTOM INFO AREA: Clear "Matched Title" + "Read from Photo (OCR)" Box
             Expanded(
-              flex: 4,
+              flex: 5,
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(10, 6, 10, 8),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    // Matched / Primary Title
                     Text(
                       card.displayTitle,
-                      maxLines: 2,
+                      maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontWeight: FontWeight.w700,
+                        fontWeight: FontWeight.w800,
                         fontSize: 13,
-                        height: 1.2,
+                        color: Colors.white,
                       ),
                     ),
-                    const SizedBox(height: 3),
-                    if (card.apiSubtitle != null)
+                    if (card.apiSubtitle != null) ...[
+                      const SizedBox(height: 2),
                       Text(
                         card.apiSubtitle!,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          fontSize: 11,
-                          color: Colors.white54,
-                        ),
-                      )
-                    else
-                      Text(
-                        card.cleanedOcrText.replaceAll('\n', ' '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: Colors.white38,
+                          fontSize: 10,
+                          color: Color(0xFF06B6D4),
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
+                    ],
+                    const SizedBox(height: 5),
+
+                    // Explicit "Fotoğraftan Okunan" (Source Text) Pill
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF090C12),
+                        borderRadius: BorderRadius.circular(7),
+                        border: Border.all(color: Colors.white10),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            '📷 ${l10n.readFromPhotoLabel}',
+                            style: const TextStyle(
+                              fontSize: 9,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white54,
+                            ),
+                          ),
+                          const SizedBox(height: 1),
+                          Text(
+                            card.extractedTitle,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 10.5,
+                              color: Colors.white70,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+
                     const Spacer(),
+
+                    // Action Row: Copy (ONLY if real IBAN/Code/Price/URL exists) + Gallery Clean + Delete
                     Row(
                       children: [
-                        if (card.actionPayload != null &&
-                            card.actionPayload!.isNotEmpty)
+                        if (hasCopyablePayload)
                           Expanded(
                             child: InkWell(
                               onTap: () {
@@ -2207,15 +2760,12 @@ class _RichMediaCardWidget extends StatelessWidget {
                                       color: Color(0xFF10B981),
                                     ),
                                     const SizedBox(width: 4),
-                                    Flexible(
-                                      child: Text(
-                                        l10n.copyPayload,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          fontSize: 10,
-                                          fontWeight: FontWeight.bold,
-                                          color: Color(0xFF10B981),
-                                        ),
+                                    Text(
+                                      l10n.copyPayload,
+                                      style: const TextStyle(
+                                        fontSize: 10.5,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFF10B981),
                                       ),
                                     ),
                                   ],
@@ -2228,10 +2778,14 @@ class _RichMediaCardWidget extends StatelessWidget {
                             child: Text(
                               card.isPurgedFromGallery
                                   ? '✓ ${l10n.purgedBadge}'
-                                  : '',
-                              style: const TextStyle(
+                                  : (card.hasApiMatch ? '✨ API Eşleşti' : ''),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
                                 fontSize: 10,
-                                color: Color(0xFF10B981),
+                                color: card.isPurgedFromGallery
+                                    ? const Color(0xFF10B981)
+                                    : const Color(0xFF818CF8),
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
@@ -2239,6 +2793,11 @@ class _RichMediaCardWidget extends StatelessWidget {
                         if (!card.isPurgedFromGallery)
                           IconButton(
                             visualDensity: VisualDensity.compact,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(
+                              minWidth: 28,
+                              minHeight: 28,
+                            ),
                             tooltip: l10n.deleteFromGallery,
                             onPressed: onPurgeGallery,
                             icon: const Icon(
@@ -2249,6 +2808,11 @@ class _RichMediaCardWidget extends StatelessWidget {
                           ),
                         IconButton(
                           visualDensity: VisualDensity.compact,
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(
+                            minWidth: 28,
+                            minHeight: 28,
+                          ),
                           tooltip: l10n.deleteCard,
                           onPressed: onDeleteCard,
                           icon: const Icon(
@@ -2270,25 +2834,11 @@ class _RichMediaCardWidget extends StatelessWidget {
   }
 }
 
-Widget _buildCardImage(VaultCard card) {
-  if (card.apiPosterUrl != null && card.apiPosterUrl!.startsWith('http')) {
-    return Image(
-      image: ResizeImage(
-        NetworkImage(card.apiPosterUrl!),
-        width: 400,
-      ),
-      fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) => _buildLocalThumbImage(card.localThumbPath),
-    );
-  }
-  return _buildLocalThumbImage(card.localThumbPath);
-}
-
 Widget _buildLocalThumbImage(String path) {
   final file = File(path);
   if (!file.existsSync()) {
     return Container(
-      color: const Color(0xFF1E2433),
+      color: const Color(0xFF1A2130),
       child: const Center(
         child: Icon(Icons.image_not_supported_outlined, color: Colors.white24),
       ),
